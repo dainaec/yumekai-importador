@@ -35,3 +35,14 @@ exports/
 # Windows
 Thumbs.db
 Desktop.ini
+
+# Datos locales y copias de seguridad
+data/
+
+# Pruebas
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribuciones del programa
+releases/
