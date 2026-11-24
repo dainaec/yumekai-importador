@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
+from yumekai_importer.version import APP_VERSION
 
 from yumekai_importer.ui.styles.application_icon import assets_directory
 
@@ -99,7 +100,30 @@ class CatalogHome(QScrollArea):
             self.buttons.append(button)
             self._cards.append(card)
         layout.addLayout(self._grid)
-        layout.addWidget(self._label("De las novedades a la tienda · Importar → Revisar → Exportar", "homeFooter"))
+        
+        # Pie de página
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 0, 0, 0)
+        footer.setSpacing(16)
+
+        footer.addWidget(
+            self._label(
+                "De las novedades a la tienda · Importar → Revisar → Exportar",
+                "homeFooter"
+            ),
+            1
+        )
+
+        version_label = self._label(
+            f"v{APP_VERSION}",
+            "homeVersion"
+        )
+        version_label.setWordWrap(False)
+        version_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        version_label.setToolTip(f"Versión de Yumekai: {APP_VERSION}")
+
+        footer.addWidget(version_label)
+        layout.addLayout(footer)
         self._columns = None
         self._arrange_cards()
 

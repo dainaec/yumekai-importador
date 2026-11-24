@@ -247,3 +247,11 @@ QProgressBar {
     text-align: center;
 }
 QProgressBar::chunk { background-color: #ECD7E8; border-radius: 4px; }
+
+/* Version de la aplicacion */
+QLabel#homeVersion {
+    color: #807584;
+    font-size: 12px;
+    font-weight: 400;
+    background: transparent;
+}
