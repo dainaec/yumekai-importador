@@ -1,0 +1,13 @@
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+importer-private/
+data/
+*.xlsx
+*.csv
+*.zip
+!tests/fixtures/*.csv
