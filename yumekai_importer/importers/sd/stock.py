@@ -12,6 +12,7 @@ import truststore
 from lxml import html
 
 from yumekai_importer.importers.excel_values import normalize_isbn
+from yumekai_importer.importers.sd.availability import SdStockInfo
 
 
 SD_CATALOG_URL = "https://www.sddistribuciones.com/AvanzadaPlus.aspx"
@@ -19,15 +20,7 @@ KIBOOK_CATALOG_URL = f"{SD_CATALOG_URL}?codEditorial=KBK&t=ed"
 PAGE_DELAY_SECONDS = 0.25
 
 def _availability(label: str) -> bool | None:
-    label = " ".join(label.casefold().split())
-
-    if re.fullmatch(r"stock\s*:\s*s[ií]", label):
-        return True
-
-    if re.fullmatch(r"stock\s*:\s*no", label):
-        return False
-
-    return None
+    return SdStockInfo(label).available
 
 
 def _next_page_data(page: html.HtmlElement) -> bytes | None:

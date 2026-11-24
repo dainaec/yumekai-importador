@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from yumekai_importer.ui.windows.import_window import ImportWindow
 from yumekai_importer.ui.windows.pending_review_window import PendingReviewWindow
+from yumekai_importer.ui.windows.inventory_window import InventoryWindow
 from yumekai_importer.ui.widgets.catalog_home import CatalogHome
 from yumekai_importer.storage.review_draft_backup import ReviewDraftBackup
 
@@ -26,10 +27,11 @@ class CatalogWindow(QWidget):
         self._pages = QStackedWidget()
         self._import_page = ImportWindow()
         self._review_page = PendingReviewWindow(draft_backup=ReviewDraftBackup())
+        self._inventory_page = InventoryWindow()
         destinations = (
             ("Importar", self._import_page),
             ("Revisar pendientes", self._review_page),
-            ("Inventario actual", self._section_page("Inventario actual")),
+            ("Inventario actual", self._inventory_page),
         )
 
         self._home_page = self._build_home(destinations)
@@ -70,14 +72,18 @@ class CatalogWindow(QWidget):
         return page
 
     def _show_page(self, page: QWidget) -> None:
-        if (self._pages.currentWidget() is self._review_page and page is not self._review_page
-                and not self._review_page.can_leave()):
-            return
+        current = self._pages.currentWidget()
+
+        for section in (self._review_page, self._inventory_page):
+            if current is section and page is not section:
+                if not section.can_leave():
+                    return
+
         self._pages.setCurrentWidget(page)
         self._navigation.setVisible(page is not self._home_page)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        for page in (self._import_page, self._review_page):
+        for page in (self._import_page, self._review_page, self._inventory_page):
             if not page.close():
                 event.ignore()
                 self._show_page(page)

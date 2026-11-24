@@ -76,7 +76,7 @@ class CatalogHome(QScrollArea):
             ("02 / PREPARAR", "Revisar pendientes", "Completa fichas, comprueba los datos y genera el CSV cuando lo necesites.",
              "Abrir revisión", True),
             ("03 / CONSULTAR", "Inventario actual", "El espacio para consultar y gestionar los productos que ya están en la tienda.",
-             "Próximamente", False),
+             "Abrir inventario", False),
         )
         for (_, destination), (step, title, description, action, primary) in zip(destinations, copy):
             card = QFrame()
@@ -94,8 +94,6 @@ class CatalogHome(QScrollArea):
             button.setMinimumHeight(46)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _checked=False, target=destination: navigate(target))
-            if title == "Inventario actual":
-                button.setEnabled(False)
             box.addWidget(button)
             self.buttons.append(button)
             self._cards.append(card)

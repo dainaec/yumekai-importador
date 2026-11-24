@@ -49,6 +49,10 @@ class CatalogApi:
         self._products_url = f"{base_url.rstrip('/')}/products.php"
         self._create_product_url = f"{base_url.rstrip('/')}/create_product.php"
         self._review_url = f"{base_url.rstrip('/')}/review_products.php"
+        self._sync_store_url = f"{base_url.rstrip('/')}/sync_store.php"
+        self._inventory_products_url = (
+            f"{base_url.rstrip('/')}/inventory_products.php"
+        )
         self._auth = (username, password)
 
     def list_pending_products(self) -> list[dict[str, object]]:
@@ -157,3 +161,78 @@ class CatalogApi:
             raise ValueError("Hostalia devolvió un recuento de guardado inesperado.")
 
         return {"created": created, "duplicates": duplicates}
+
+    def list_inventory_products(self) -> list[dict[str, object]]:
+        response = requests.get(
+            self._inventory_products_url,
+            auth=self._auth,
+            timeout=(5, 60),
+        )
+
+        self._check_response(response, "inventory_products.php")
+
+        products = response.json()
+
+        if (
+            not isinstance(products, list)
+            or any(
+                not isinstance(product, dict)
+                or type(product.get("woocommerce_id")) is not int
+                or product["woocommerce_id"] < 1
+                for product in products
+            )
+        ):
+            raise ValueError(
+                "La API no devolvió un listado válido del inventario."
+            )
+
+        return products
+
+    def sync_store(self) -> dict[str, object]:
+        try:
+            response = requests.post(
+                self._sync_store_url,
+                json={"action": "sync"},
+                auth=self._auth,
+                timeout=(5, 120),
+            )
+        except requests.exceptions.RequestException as error:
+            raise ValueError(
+                "No se pudo confirmar la sincronización. Recarga las fichas "
+                "para comprobar el resultado antes de reintentar."
+            ) from error
+
+        self._check_response(response, "sync_store.php")
+
+        try:
+            result = response.json()
+        except ValueError as error:
+            raise ValueError(
+                "Respuesta inesperada. Recarga las fichas para comprobar el resultado."
+            ) from error
+
+        counters = (
+            "store_isbns",
+            "linked",
+            "already_linked",
+            "not_in_importer",
+            "invalid_store_isbns",
+        )
+
+        if (
+            not isinstance(result, dict)
+            or any(
+                type(result.get(key)) is not int or result[key] < 0
+                for key in counters
+            )
+            or result["linked"]
+            + result["already_linked"]
+            + result["not_in_importer"] != result["store_isbns"]
+            or not isinstance(result.get("products"), list)
+            or len(result["products"]) != result["linked"]
+        ):
+            raise ValueError(
+                "Respuesta incompleta. Recarga las fichas para comprobar el resultado."
+            )
+
+        return result

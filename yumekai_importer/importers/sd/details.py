@@ -1,7 +1,7 @@
 import ssl
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -10,6 +10,7 @@ import truststore
 from lxml import html
 
 from yumekai_importer.importers.sd.codes import normalize_sd_code
+from yumekai_importer.importers.sd.availability import SdStockInfo, consultation_day, prefer_stock_info, read_stock_info
 from yumekai_importer.catalog.product import Product
 from yumekai_importer.catalog.classification import canonical_demographic, sd_classification
 from yumekai_importer.catalog.book_formats import normalize_sd_format
@@ -28,6 +29,7 @@ class SdDetails:
     image_url: str | None = None
     language: str | None = None
     format_confirmed: bool = True
+    stock_info: SdStockInfo | None = None
 
 
 def _text(page: html.HtmlElement, element_id: str) -> str | None:
@@ -60,13 +62,13 @@ def _public_detail_url(page: html.HtmlElement, source_url: str) -> str | None:
     return f"https://www.sddistribuciones.com/{slug}-id-{code}"
 
 
-def _parse_public_details(page: html.HtmlElement, url: str, isbn: str) -> SdDetails:
+def _parse_public_details(page: html.HtmlElement, url: str, isbn: str, *, checked_on=None) -> SdDetails:
     if _is_legacy_detail_url(url) or page.get_element_by_id("dvFichaArticuloFA", None) is None:
         raise ValueError("SD no ha devuelto la ficha pública para confirmar el formato.")
-    return _parse_details(page, isbn)
+    return _parse_details(page, isbn, checked_on=checked_on)
 
 
-def _parse_details(page: html.HtmlElement, isbn: str) -> SdDetails:
+def _parse_details(page: html.HtmlElement, isbn: str, *, checked_on=None) -> SdDetails:
     expected = normalize_sd_code(isbn)
     article = _main_article(page)
     actual = {normalize_sd_code(_text(article, field)) for field in ("txtISBN", "txtEan")}
@@ -101,6 +103,7 @@ def _parse_details(page: html.HtmlElement, isbn: str) -> SdDetails:
         retail_price=price.group(1).replace(",", ".") if price else None,
         image_url=image_url,
         language=_text(page, "txtIdiomaFA") or _text(page, "txtIdioma"),
+        stock_info=read_stock_info(page, checked_on=checked_on),
     )
 
 
@@ -132,14 +135,15 @@ def _read_details_page(url: str) -> tuple[html.HtmlElement, str]:
         return html.fromstring(content, parser=parser), response.geturl()
 
 
-@lru_cache(maxsize=2048)
 def read_sd_details(url: str, isbn: str) -> SdDetails:
+    checked_on = consultation_day()
     page, final = _read_details_page(url)
-    details = _parse_details(page, isbn)
+    details = _parse_details(page, isbn, checked_on=checked_on)
     public_url = _public_detail_url(page, final)
     if public_url is not None:
         page, final = _read_details_page(public_url)
-        details = _parse_public_details(page, final, isbn)
+        public_details = _parse_public_details(page, final, isbn, checked_on=checked_on)
+        details = replace(public_details, stock_info=prefer_stock_info(public_details.stock_info, details.stock_info))
     elif _is_legacy_detail_url(final):
         raise ValueError("No se pudo localizar la ficha pública de SD para confirmar el formato.")
     return details
@@ -170,6 +174,12 @@ def apply_sd_details(product: Product, details: SdDetails) -> bool:
         values["demographic"] = details.demographic
 
     added = False
+    if details.stock_info is not None and details.stock_info.yumekai_status is not None:
+        from yumekai_importer.catalog.product import YumekaiStatus
+        status = YumekaiStatus(details.stock_info.yumekai_status)
+        if product.yumekai_status != status:
+            product.yumekai_status = status
+            added = True
     if details.format_confirmed:
         book_format = normalize_sd_format(details.sd_format)
         if book_format != product.book_format:

@@ -324,7 +324,6 @@ class ImportWindow(QWidget):
         return [
             product for product in self._result.products
             if product.isbn in self._result.sd_references
-            and (product.yumekai_status is None or needs_sd_details(product))
         ]
 
     def _check_sd_stock(self) -> None:
@@ -370,11 +369,9 @@ class ImportWindow(QWidget):
 
         updated = 0
         for product in self._result.products:
-            available = worker.result.get(product.isbn)
-            if product.yumekai_status is None and available is not None:
-                product.yumekai_status = (
-                    YumekaiStatus.ON_DEMAND if available else YumekaiStatus.OUT_OF_STOCK
-                )
+            status = worker.statuses.get(product.isbn)
+            if status is not None:
+                product.yumekai_status = YumekaiStatus(status)
 
             details = worker.details.get(product.isbn)
             if details is not None and apply_sd_details(product, details):
@@ -382,19 +379,19 @@ class ImportWindow(QWidget):
 
         affected = {id(self._result.products_by_row[i.row]) for i in self._result.issues
                     if i.row in self._result.products_by_row}
-        if any(id(p) in affected and (p.isbn in worker.details or p.isbn in worker.result)
+        if any(id(p) in affected and (p.isbn in worker.details or p.isbn in worker.statuses)
                for p in self._result.products):
             self._issues_exported = False
 
         self._show_products()
         message = (
-            f"Stock consultado para {len(worker.result)} ISBN.\n"
+            f"Estado SD confirmado para {len(worker.statuses)} códigos.\n"
             f"Datos añadidos a {updated} fichas."
         )
-        unconfirmed = len(worker.requested_isbns - worker.result.keys())
+        unconfirmed = len(worker.requested_isbns - worker.statuses.keys())
         if unconfirmed:
-            message += (f"\n{unconfirmed} ISBN sin stock confirmado en SD."
-                        " No encontrados o con disponibilidad por consultar; no se consideran agotados."
+            message += (f"\n{unconfirmed} códigos con estado sin confirmar en SD."
+                        " No encontrados, con error o con disponibilidad por consultar sin fecha válida."
                         " Puedes marcarlos y recomprobarlos por ISBN en Revisar pendientes.")
         error = worker.error
         if worker.stop_requested.is_set():

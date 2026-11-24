@@ -24,6 +24,7 @@ class SdStockWorker(QThread):
         self._detail_isbns = set(detail_isbns or ())
         self.stop_requested = Event()
         self.result: dict[str, bool] = {}
+        self.statuses: dict[str, str] = {}
         self.details: dict[str, SdDetails] = {}
         self.error: str | None = None
 
@@ -40,7 +41,12 @@ class SdStockWorker(QThread):
             self.error = str(error) or "No se pudo consultar SD."
             return
 
-        articles = [(isbn, url) for isbn, url in urls.items() if isbn in self._detail_isbns]
+        self.statuses = {isbn: "yk_on_demand" if available else "outofstock"
+                         for isbn, available in self.result.items()}
+        # A negative list flag can hide a future release marked "Consultar disponibilidad".
+        # Read its product page/date even when all the other data is already complete.
+        articles = [(isbn, url) for isbn, url in urls.items()
+                    if isbn in self._detail_isbns or self.result.get(isbn) is not True]
         failed = 0
         first_error = None
 
@@ -63,8 +69,21 @@ class SdStockWorker(QThread):
                 for future in done:
                     isbn = pending.pop(future)
                     try:
-                        self.details[isbn] = future.result()
+                        details = future.result()
+                        self.details[isbn] = details
+                        if details.stock_info is not None and details.stock_info.kind is not None:
+                            status = details.stock_info.yumekai_status
+                            if status is not None:
+                                self.statuses[isbn] = status
+                            else:
+                                self.statuses.pop(isbn, None)
+                            if details.stock_info.available is not None:
+                                self.result[isbn] = details.stock_info.available
+                            else:
+                                self.result.pop(isbn, None)
                     except Exception as error:
+                        if self.result.get(isbn) is not True:
+                            self.statuses.pop(isbn, None)
                         failed += 1
                         if first_error is None:
                             first_error = f"{isbn}: {error}"

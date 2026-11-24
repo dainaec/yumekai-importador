@@ -18,7 +18,9 @@ try {
     $pdo = require dirname(__DIR__, 2) . '/importer-private/database.php';
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $statement = $pdo->prepare('SELECT ' . REVIEW_COLUMNS . ' FROM products
-        WHERE review_status = :status ORDER BY title, isbn');
+        WHERE review_status = :status
+        AND woocommerce_id IS NULL
+        ORDER BY title, isbn');
     $statement->execute(['status' => $status]);
     review_response(200, array_map('review_row', $statement->fetchAll(PDO::FETCH_ASSOC)));
 } catch (Throwable $error) {

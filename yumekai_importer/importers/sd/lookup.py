@@ -8,11 +8,14 @@ from urllib.request import Request, urlopen
 from lxml import html
 
 from yumekai_importer.importers.sd.codes import normalize_sd_code
+from yumekai_importer.importers.sd.availability import (
+    SdStockInfo, consultation_day, prefer_stock_info, read_stock_info,
+)
 from yumekai_importer.importers.sd.details import (
     SdDetails, _is_sd_url, _is_legacy_detail_url, _main_article, _parse_details, _parse_public_details,
     _public_detail_url, _ssl_context, _text,
 )
-from yumekai_importer.importers.sd.stock import SD_CATALOG_URL, _availability
+from yumekai_importer.importers.sd.stock import SD_CATALOG_URL
 
 
 class SdLookupCancelled(Exception):
@@ -27,6 +30,7 @@ class SdLookupResult:
     details: SdDetails | None = None
     url: str = ''
     message: str = ''
+    stock_info: SdStockInfo | None = None
 
 
 def _fetch_page(url: str, stop_requested: Event) -> tuple[html.HtmlElement, str]:
@@ -65,17 +69,11 @@ def _detail_isbn(page):
 
 
 def _detail_stock(page):
-    # The document also contains stock for suggested books; scope to the main item.
-    label = _text(page, 'dvContainerEstadoFichaArticulo') or ''
-    if not label:
-        element = page.get_element_by_id('HiddenEstadoArticulo', None)
-        if element is not None:
-            label = html.fromstring('<div>' + element.get('value', '') + '</div>').text_content()
-    return _availability(label)
+    return read_stock_info(page).available
 
 
-def _read_public_detail(page, source_url, isbn, stop):
-    details = _parse_details(page, isbn)
+def _read_public_detail(page, source_url, isbn, stop, *, checked_on=None):
+    details = _parse_details(page, isbn, checked_on=checked_on)
     public_url = _public_detail_url(page, source_url)
     if public_url is None:
         if _is_legacy_detail_url(source_url):
@@ -84,7 +82,7 @@ def _read_public_detail(page, source_url, isbn, stop):
         return page, source_url, details, ''
     try:
         public_page, final = _fetch_page(public_url, stop)
-        public_details = _parse_public_details(public_page, final, isbn)
+        public_details = _parse_public_details(public_page, final, isbn, checked_on=checked_on)
         return public_page, final, public_details, ''
     except SdLookupCancelled:
         message = 'Consulta detenida antes de confirmar el formato en la ficha pública de SD.'
@@ -95,23 +93,20 @@ def _read_public_detail(page, source_url, isbn, stop):
 
 def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupResult:
     stop = stop_requested if stop_requested is not None else Event()
+    checked_on = consultation_day()
     normalized = normalize_sd_code(isbn)
     if normalized is None:
         raise ValueError('La ficha no tiene un código para buscar en SD.')
     url = SD_CATALOG_URL + '?' + urlencode({'query': normalized, 'reset': 's'})
     page, final = _fetch_page(url, stop)
     if page.get_element_by_id('txtISBN', None) is not None or page.get_element_by_id('txtEan', None) is not None:
-        # A unique search result redirects straight to FichaArticulo.aspx.
-        # Its related-product cards must not be used as search results.
-        available = _detail_stock(page)
-        page, final, details, message = _read_public_detail(page, final, normalized, stop)
-        public_stock = _detail_stock(page)
-        if public_stock is not None:
-            available = public_stock
-        return SdLookupResult(normalized, 'found', available, details, final, message)
+        fallback = read_stock_info(page, checked_on=checked_on)
+        page, final, details, message = _read_public_detail(page, final, normalized, stop, checked_on=checked_on)
+        stock = prefer_stock_info(read_stock_info(page, checked_on=checked_on), fallback)
+        return SdLookupResult(normalized, 'found', stock.available, details, final, message, stock)
 
     candidates = {}
-    values = set()
+    states = {}
     matched = False
     for card in page.find_class('fileproduct'):
         fields = card.find_class('dvISBN')
@@ -119,40 +114,41 @@ def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupRe
         if actual != normalized:
             continue
         matched = True
-        states = card.find_class('estado')
-        available = _availability(states[0].text_content()) if states else None
-        if available is not None:
-            values.add(available)
+        labels = card.find_class('estado')
+        if labels:
+            info = SdStockInfo(' '.join(labels[0].text_content().split()), checked_on=checked_on)
+            if info.kind:
+                states[info.kind] = info
         for title in card.find_class('filetitle'):
             for href in title.xpath('.//a[@href]/@href'):
                 detail_url = urljoin(final, href)
                 if _is_sd_url(detail_url):
                     candidates[detail_url] = True
-    available = next(iter(values)) if len(values) == 1 else None
+    fallback = next(iter(states.values())) if len(states) == 1 else SdStockInfo(checked_on=checked_on)
     if candidates:
         try:
             detail_page, detail_url = _fetch_page(next(iter(candidates)), stop)
-            detail_page, detail_url, details, message = _read_public_detail(detail_page, detail_url, normalized, stop)
-            detail_available = _detail_stock(detail_page)
-            if detail_available is not None:
-                available = detail_available
-            return SdLookupResult(normalized, 'found', available, details, detail_url, message)
+            initial_stock = prefer_stock_info(read_stock_info(detail_page, checked_on=checked_on), fallback)
+            detail_page, detail_url, details, message = _read_public_detail(
+                detail_page, detail_url, normalized, stop, checked_on=checked_on)
+            stock = prefer_stock_info(read_stock_info(detail_page, checked_on=checked_on), initial_stock)
+            return SdLookupResult(normalized, 'found', stock.available, details, detail_url, message, stock)
         except SdLookupCancelled:
-            if available is None:
+            if fallback.yumekai_status is None:
                 raise
-            return SdLookupResult(normalized, 'found', available, url=final,
-                                  message='Consulta detenida antes de completar la ficha.')
+            return SdLookupResult(normalized, 'found', fallback.available, url=final,
+                                  message='Consulta detenida antes de completar la ficha.', stock_info=fallback)
         except Exception as error:
-            # Keep an exact stock result when the detail page fails or mismatches.
-            return SdLookupResult(normalized, 'found', available, url=final,
-                                  message=f'Ficha sin completar: {error}')
+            return SdLookupResult(normalized, 'found', fallback.available, url=final,
+                                  message=f'Ficha sin completar: {error}', stock_info=fallback)
     if matched:
-        return SdLookupResult(normalized, 'found', available, url=final,
-                              message='ISBN localizado en el listado, pero sin enlace utilizable a su ficha.')
+        return SdLookupResult(normalized, 'found', fallback.available, url=final,
+                              message='Código localizado en el listado, pero sin enlace utilizable a su ficha.',
+                              stock_info=fallback)
     if page.get_element_by_id('panNoResultados', None) is not None:
         return SdLookupResult(normalized, 'not_found', url=final,
-                              message='SD no ha encontrado este ISBN. No implica que esté agotado.')
+                              message='SD no ha encontrado este código. No implica que esté agotado.')
     if page.find_class('fileproduct'):
         return SdLookupResult(normalized, 'not_found', url=final,
-                              message='Los resultados de SD no coinciden exactamente con el ISBN.')
+                              message='Los resultados de SD no coinciden exactamente con el código.')
     raise ValueError('SD devolvió una página sin una ficha ni resultados reconocibles. Vuelve a intentarlo.')

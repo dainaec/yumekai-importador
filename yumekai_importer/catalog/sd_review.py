@@ -59,15 +59,16 @@ def sd_review_changes(product, result):
             if price is not None and Decimal(price) > 0:
                 changes['retail_price'] = price
     status = stock_code(product.get('yumekai_status'))
-    if result.available is not None:
-        if status in {'', 'yk_on_demand', 'outofstock'}:
-            updated = 'yk_on_demand' if result.available else 'outofstock'
-            if status != updated:
-                changes['yumekai_status'] = updated
-        else:
-            notes.append('Estado de tienda conservado')
+    stock = result.stock_info or (details.stock_info if details is not None else None)
+    updated = stock.yumekai_status if stock is not None else (
+        'yk_on_demand' if result.available else 'outofstock' if result.available is False else None)
+    if updated is not None:
+        if status != updated:
+            changes['yumekai_status'] = updated
+        if stock is not None:
+            notes.append(stock.explanation)
     else:
-        notes.append('Disponibilidad sin confirmar en SD; estado anterior conservado')
+        notes.append(stock.explanation if stock is not None else 'Disponibilidad sin confirmar en SD; estado anterior conservado')
     if result.message:
         notes.append(result.message)
     merged = {**product, **changes}
