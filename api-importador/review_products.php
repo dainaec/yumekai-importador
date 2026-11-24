@@ -56,10 +56,15 @@ try {
         $lock->execute(['isbn' => $original]);
         $previous = $lock->fetch(PDO::FETCH_ASSOC);
         $lock->closeCursor();
-        if ($previous === false || $previous['review_status'] !== $entry->expected_review_status
-            || $previous['updated_at'] !== $entry->expected_updated_at
+        if ($previous === false) {
+            throw new ReviewRequestError("La ficha {$original} ya no existe en el importador. Sus cambios se conservan para revisar.", 409);
+        }
+        if ($previous['review_status'] !== $entry->expected_review_status) {
+            throw new ReviewRequestError("La ficha {$original} está ahora en otro estado ({$previous['review_status']}). Sus cambios se conservan para revisar.", 409);
+        }
+        if ($previous['updated_at'] !== $entry->expected_updated_at
             || (isset($entry->expected_revision) && !hash_equals(review_row($previous)['_revision'], $entry->expected_revision))) {
-            throw new ReviewRequestError("La ficha {$original} cambió desde la última carga. Recarga antes de continuar.", 409);
+            throw new ReviewRequestError("La ficha {$original} tiene una versión distinta en el importador. Sus cambios se conservan para comparar antes de sobrescribir.", 409);
         }
         if (($action === 'ready' && $previous['review_status'] !== 'pending_review')
             || ($action === 'pending' && $previous['review_status'] !== 'ready_to_upload')) {

@@ -1,13 +1,37 @@
-
+# Entorno virtual
 .venv/
 venv/
+
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.egg-info/
+
+# Credenciales y configuración privada
 .env
 .env.*
-importer-private/
-data/
+!.env.example
+credentials.json
+secrets.json
+
+# Compilación
+build/
+dist/
+
+# Archivos temporales
+*.log
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+
+# Exportaciones y catálogos
+exports/
 *.xlsx
 *.csv
-*.zip
-!tests/fixtures/*.csv
+
+# Windows
+Thumbs.db
+Desktop.ini

@@ -4,6 +4,12 @@ from yumekai_importer.catalog.product import Product
 from yumekai_importer.catalog.classification import canonical_demographic
 
 
+class CatalogRequestError(ValueError):
+    def __init__(self, message: str, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _product_payload(product: Product) -> dict[str, object]:
     price = product.retail_price
     work_type = (product.work_type or "").strip()
@@ -75,7 +81,8 @@ class CatalogApi:
             except ValueError:
                 body = {}
             message = body.get("message") if isinstance(body, dict) else None
-            raise ValueError(message or f"Hostalia devolvió HTTP {response.status_code}.")
+            raise CatalogRequestError(message or f"Hostalia devolvió HTTP {response.status_code}.",
+                                      response.status_code)
 
     def review_products(self, action: str, products: list[dict]) -> dict:
         if action not in {"save", "ready", "pending", "delete"} or not products:

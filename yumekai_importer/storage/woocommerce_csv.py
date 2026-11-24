@@ -104,6 +104,8 @@ def woocommerce_categories(work_type: str, demographic: str | None) -> list[str]
     if work_type == "Manhua":
         return ["Manwha/Manhua > Manhua", "Manwha/Manhua"]
     demographic = canonical_demographic(demographic)
+    if demographic == "Shōjo":
+        demographic = "Shojo"
     if demographic == ARTBOOK_CATEGORY:
         return [f"Manga > {demographic}", "Manga"]
     return ["Manga", f"Manga > {demographic}"] if demographic else ["Manga"]

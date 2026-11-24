@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 import truststore
 from lxml import html
 
-from yumekai_importer.importers.excel_values import normalize_isbn
+from yumekai_importer.importers.sd.codes import normalize_sd_code
 from yumekai_importer.catalog.product import Product
 from yumekai_importer.catalog.classification import canonical_demographic, sd_classification
 from yumekai_importer.catalog.book_formats import normalize_sd_format
@@ -67,10 +67,10 @@ def _parse_public_details(page: html.HtmlElement, url: str, isbn: str) -> SdDeta
 
 
 def _parse_details(page: html.HtmlElement, isbn: str) -> SdDetails:
-    expected = normalize_isbn(isbn)
+    expected = normalize_sd_code(isbn)
     article = _main_article(page)
-    actual = normalize_isbn(_text(article, "txtISBN")) or normalize_isbn(_text(article, "txtEan"))
-    if expected is None or actual != expected:
+    actual = {normalize_sd_code(_text(article, field)) for field in ("txtISBN", "txtEan")}
+    if expected is None or expected not in actual:
         raise ValueError("El ISBN de la ficha de SD no coincide.")
 
     work_type, demographic = sd_classification([

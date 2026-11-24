@@ -168,6 +168,30 @@ return $p;
         self.action('delete', [entry], expected=409)
         self.assertEqual(next(p for p in self.rows() if p['isbn'] == self.isbn)['title'], 'Cambio más reciente')
 
+    def test_one_missing_row_does_not_block_the_other_drafts_in_python_save(self):
+        from yumekai_importer.storage.review_saving import save_review_drafts
+        entries = [self.entry(changes={'author': 'Guardada'}), self.entry(self.other, changes={'author': 'Pendiente'})]
+        with sqlite3.connect(self.database) as db:
+            db.execute('DELETE FROM products WHERE isbn=?', (self.other,))
+        result = {'saved': [], 'failed': []}
+        save_review_drafts(CatalogApi(self.url, 'test', 'test'), entries, result)
+        self.assertEqual([row['original_isbn'] for row in result['saved']], [self.isbn])
+        self.assertEqual(result['failed'][0]['original_isbn'], self.other)
+        self.assertIn('ya no existe', result['failed'][0]['message'])
+        self.assertEqual(self.rows()[0]['author'], 'Guardada')
+
+    def test_changed_review_state_and_modified_data_have_different_messages(self):
+        entry = self.entry(changes={'author': 'No sobrescribir'})
+        with sqlite3.connect(self.database) as db:
+            db.execute('UPDATE products SET review_status=? WHERE isbn=?', ('ready_to_upload', self.isbn))
+        message = self.action('save', [entry], expected=409)['message']
+        self.assertIn('otro estado', message)
+        with sqlite3.connect(self.database) as db:
+            db.execute('UPDATE products SET review_status=?,title=? WHERE isbn=?',
+                       ('pending_review', 'Cambio más reciente', self.isbn))
+        message = self.action('save', [entry], expected=409)['message']
+        self.assertIn('versión distinta', message)
+
     def test_delete_is_atomic_and_uses_exact_original_isbns(self):
         good = self.entry()
         stale = self.entry(self.other)

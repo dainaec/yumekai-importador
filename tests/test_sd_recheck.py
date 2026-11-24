@@ -86,10 +86,20 @@ class SdLookupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'sin una ficha'):
                 lookup.lookup_sd_isbn(ISBN)
 
-    def test_invalid_isbn_does_not_make_a_network_request(self):
+    def test_pack_eans_and_codes_without_isbn_checksum_are_queried(self):
+        for code in ('8424248928490', '1234567890123', '12345678'):
+            with self.subTest(code=code):
+                with patch.object(lookup, '_fetch_page', return_value=(detail_page(isbn=code), URL)) as fetch:
+                    result = lookup.lookup_sd_isbn(code)
+                fetch.assert_called_once()
+                self.assertEqual(result.status, 'found')
+                self.assertEqual(result.isbn, code)
+                self.assertEqual(result.details.pages, 200)
+
+    def test_empty_code_does_not_search_the_whole_catalog(self):
         with patch.object(lookup, '_fetch_page') as fetch:
-            with self.assertRaises(ValueError):
-                lookup.lookup_sd_isbn('1234567890123')
+            with self.assertRaisesRegex(ValueError, 'no tiene un código'):
+                lookup.lookup_sd_isbn('')
             fetch.assert_not_called()
 
     def test_stock_is_kept_when_exact_card_has_no_detail_link(self):

@@ -69,7 +69,7 @@ def _cell_text(product, field):
 
 
 class PendingReviewWindow(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, *, draft_backup=None) -> None:
         super().__init__()
         self.setObjectName("pendingReviewWindow")
         self._worker = None
@@ -79,6 +79,8 @@ class PendingReviewWindow(QWidget):
         self._duplicates_dialog = None
         self._products = {status: {} for status, _ in REVIEW_TABS}
         self._drafts = {}  # Unsaved changes from editing or the latest supplier check.
+        self._draft_backup = draft_backup
+        self._backup_error = None
         self._selected = set()
         self._loaded = False
         self._api_override = None
@@ -89,6 +91,10 @@ class PendingReviewWindow(QWidget):
         self._tools_button.setObjectName("reviewMenuButton")
         tools_menu = QMenu(self)
         self._tools_button.setMenu(tools_menu)
+        self._recover_drafts_action = QAction("Recuperar última revisión local", self)
+        self._recover_drafts_action.triggered.connect(self._restore_draft_backup)
+        tools_menu.addAction(self._recover_drafts_action)
+        tools_menu.addSeparator()
         self._refresh_button = QAction("Recargar datos", self)
         self._refresh_button.triggered.connect(self._load_pending)
         self._duplicates_button = QAction("Ver duplicados (0)", self)
@@ -203,10 +209,43 @@ class PendingReviewWindow(QWidget):
         actions.addWidget(self._save_button)
         actions.addWidget(self._export_button)
 
+        # Contenedor de avisos
+        self._feedback_container = QWidget()
+        self._feedback_container.setObjectName("feedbackContainer")
+        self._feedback_container.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True
+        )
+
+        # Icono
+        self._feedback_icon = QLabel()
+        self._feedback_icon.setFixedWidth(22)
+        self._feedback_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Mensaje
         self._feedback = QLabel()
         self._feedback.setTextFormat(Qt.TextFormat.PlainText)
         self._feedback.setWordWrap(True)
-        self._feedback.hide()
+
+        # Botón para cerrar
+        self._feedback_close = QPushButton("×")
+        self._feedback_close.setFixedSize(24, 24)
+        self._feedback_close.setToolTip("Cerrar aviso")
+        self._feedback_close.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._feedback_close.clicked.connect(
+            self._feedback_container.hide
+        )
+
+        # Distribución horizontal
+        feedback_layout = QHBoxLayout(self._feedback_container)
+        feedback_layout.setContentsMargins(10, 4, 8, 4)
+        feedback_layout.setSpacing(8)
+
+        feedback_layout.addWidget(self._feedback_icon)
+        feedback_layout.addWidget(self._feedback, 1)
+        feedback_layout.addWidget(self._feedback_close)
+
+        self._feedback_container.hide()
+        
         help_label = QLabel("Doble clic para editar. El título y las casillas permanecen visibles al desplazarte.")
         help_label.setObjectName("reviewHint")
         help_label.setWordWrap(True)
@@ -237,8 +276,8 @@ class PendingReviewWindow(QWidget):
         layout.addWidget(summary_bar)
         layout.addLayout(actions)
         layout.addWidget(help_label)
+        layout.addWidget(self._feedback_container)
         layout.addWidget(self._tabs, 1)
-        layout.addWidget(self._feedback)
         self._update_filter_options()
         self._fill_tables()
 
@@ -259,7 +298,7 @@ class PendingReviewWindow(QWidget):
                 raise ValueError("Ejecuta la prueba de conexión para guardar tu acceso a Hostalia.")
             return CatalogApi(API_URL, *credentials)
         except Exception as error:
-            self._set_feedback(str(error))
+            self._set_feedback(str(error), kind="error")
             return None
 
     def showEvent(self, event: QShowEvent) -> None:
@@ -267,11 +306,106 @@ class PendingReviewWindow(QWidget):
         if not self._drafts:
             self._load_pending()
 
-    def _set_feedback(self, message):
+    def _set_feedback(self, message, kind="info"):
+        styles = {
+            "info": (
+                "#EFF6FF", "#24538C", "#C7DCF5", "ⓘ"
+            ),
+            "error": (
+                "#FEF2F2", "#991B1B", "#F2CCCC", "⚠"
+            ),
+            "success": (
+                "#F0FDF4", "#166534", "#BBE5C8", "✓"
+            ),
+        }
+
+        background, color, border, icon = styles.get(
+            kind, styles["info"]
+        )
+
+        self._feedback_container.setStyleSheet(
+            f"""
+            QWidget#feedbackContainer {{
+                background-color: {background};
+                border: 1px solid {border};
+                border-radius: 6px;
+            }}
+
+            QLabel {{
+                background: transparent;
+                border: none;
+                color: {color};
+                font-size: 13px;
+                font-weight: 500;
+                padding: 0px;
+            }}
+
+            QPushButton {{
+                background: transparent;
+                border: none;
+                border-radius: 4px;
+                color: {color};
+                font-size: 18px;
+                font-weight: 500;
+                padding: 0px;
+            }}
+
+            QPushButton:hover {{
+                background-color: {border};
+            }}
+            """
+        )
+
+        self._feedback_icon.setText(icon)
+        self._feedback_icon.setStyleSheet(
+            "font-size: 16px; font-weight: bold;"
+        )
+
         self._feedback.setText(message)
-        self._feedback.setVisible(bool(message))
+        self._feedback_container.setVisible(bool(message))
+
         if self._duplicates_dialog is not None:
             self._duplicates_dialog.set_feedback(message)
+
+    def _checkpoint_drafts(self, *, clear_when_empty=False):
+        if self._draft_backup is None:
+            return
+        try:
+            if self._drafts:
+                products = {key: product for rows in self._products.values() for key, product in rows.items()
+                            if key in self._drafts}
+                results = {key: result for key, result in self._sd_results.items() if key in self._drafts}
+                self._draft_backup.save(products, self._drafts, results)
+            elif clear_when_empty:
+                self._draft_backup.clear()
+            self._backup_error = None
+        except (OSError, ValueError) as error:
+            self._backup_error = str(error)
+
+    def _restore_draft_backup(self):
+        if self._busy or self._drafts or self._draft_backup is None:
+            return
+        try:
+            saved = self._draft_backup.load()
+        except (OSError, ValueError) as error:
+            self._set_feedback(str(error), kind="error")
+            return
+        if not saved or not saved["drafts"]:
+            self._set_feedback("No hay una revisión local pendiente de recuperar.")
+            return
+        # Preserve the original snapshots/revisions: recovery must not overwrite a newer server edit.
+        for key in saved["drafts"]:
+            for rows in self._products.values():
+                rows.pop(key, None)
+            product = saved["products"][key]
+            self._products[product["review_status"]][key] = product
+        self._drafts = saved["drafts"]
+        self._sd_results.update(saved["sd_results"])
+        self._loaded = True
+        self._update_filter_options()
+        self._reset_filters()
+        self._set_feedback(f"Recuperados {len(self._drafts)} cambios de la copia local. "
+                           "Los datos nuevos que pudiera haber en el servidor se comprobarán al guardar.")
 
     def _all_current_products(self):
         return {key: self._current_product(key) for rows in self._products.values() for key in rows}
@@ -351,6 +485,8 @@ class PendingReviewWindow(QWidget):
                     note += " · " + "; ".join(recommended) + " (recomendado)"
                 if isbn in self._drafts:
                     note = "Cambios sin guardar · " + note
+                    if self._drafts[isbn].get("save_error"):
+                        note = "No guardada: " + self._drafts[isbn]["save_error"] + " · " + note
                 if isbn in self._sd_results:
                     record = self._sd_results[isbn]
                     note += " · SD: " + ("Datos guardados · " if record.get("saved") else "") + record["note"]
@@ -411,6 +547,8 @@ class PendingReviewWindow(QWidget):
         self._selection_tools.setText(f"Acciones de selección ({count})")
         self._selection_tools.setEnabled(bool(count) and not self._busy)
         self._tools_button.setEnabled(not self._busy)
+        self._recover_drafts_action.setEnabled(not self._busy and not self._drafts
+            and self._draft_backup is not None and self._draft_backup.exists())
         self._title_button.setEnabled(bool(count) and not self._busy)
         if self._sd_worker is None:
             self._sd_button.setText(f"Recomprobar selección ({count})")
@@ -470,7 +608,7 @@ class PendingReviewWindow(QWidget):
         worker = self._worker
         self._worker = None
         if worker.error is not None:
-            self._set_feedback(f"No se pudieron cargar las fichas. {worker.error}")
+            self._set_feedback(f"No se pudieron cargar las fichas. {worker.error}", kind="error")
         else:
             self._products = {status: {str(row["isbn"]): row for row in worker.products_by_status[status]}
                               for status, _ in REVIEW_TABS}
@@ -522,6 +660,7 @@ class PendingReviewWindow(QWidget):
         draft = self._drafts.setdefault(original, {"changes": {}, "ready_to_upload": ready})
         draft["changes"].update(changes)
         draft["ready_to_upload"] = ready
+        self._checkpoint_drafts()
         self._fill_tables()
         self._start_action("save", [self._entry(original)])
 
@@ -559,6 +698,7 @@ class PendingReviewWindow(QWidget):
             draft = self._drafts.setdefault(key, {"changes": {},
                 "ready_to_upload": products[key].get("review_status") == "ready_to_upload"})
             draft["changes"].update(changes)
+        self._checkpoint_drafts()
         self._fill_tables()
         self._set_feedback(f"Colección/tomo: cambios propuestos en {len(proposals)} ficha(s). "
                            "Pulsa «Guardar cambios pendientes» para guardarlos.")
@@ -616,6 +756,7 @@ class PendingReviewWindow(QWidget):
             self._sd_results[key] = {"title": str(product.get("title") or ""), "isbn": result.isbn,
                 "result": labels.get(result.status, result.status), "note": note, "url": result.url,
                 "changed": bool(changes), "saved": False}
+        self._checkpoint_drafts()
         self._update_filter_options()
         self._fill_tables()
         message = (f"SD: {found} encontradas · {missing} no encontradas · {errors} con error · {cancelled} sin completar.\n"
@@ -625,7 +766,7 @@ class PendingReviewWindow(QWidget):
         message += "Pulsa «Ver resultado SD» para consultar el motivo de cada ficha."
         if worker.error:
             message += "\n" + worker.error
-        self._set_feedback(message)
+        self._set_feedback(message, kind="error" if errors or worker.error else "info")
         worker.deleteLater()
         self._update_actions()
 
@@ -694,6 +835,7 @@ class PendingReviewWindow(QWidget):
         api = self._api()
         if api is None:
             return
+        self._checkpoint_drafts()
         self._action_worker = ReviewActionWorker(api, action, entries, self)
         self._action_worker.finished.connect(self._finish_action)
         self._set_feedback("Borrando fichas…" if action == "delete" else "Guardando fichas…")
@@ -703,33 +845,48 @@ class PendingReviewWindow(QWidget):
     def _finish_action(self):
         worker = self._action_worker
         self._action_worker = None
+        had_drafts = bool(self._drafts)
+        result = worker.result or {}
+        originals = (result.get("deleted", []) if worker.action == "delete" else
+                     [entry["original_isbn"] for entry in result.get("saved", [])])
+        for original in originals:
+            for rows in self._products.values():
+                rows.pop(original, None)
+            self._drafts.pop(original, None)
+            self._selected.discard(original)
+        if worker.action != "delete":
+            for entry in result.get("saved", []):
+                product = entry["product"]
+                self._products[product["review_status"]][str(product["isbn"])] = product
+                original = entry["original_isbn"]
+                if original in self._sd_results and self._sd_results[original].get("changed"):
+                    record = self._sd_results.pop(original)
+                    record["saved"] = True
+                    self._sd_results[str(product["isbn"])] = record
+        failed = result.get("failed", [])
+        for failure in failed:
+            key = failure["original_isbn"]
+            if key in self._drafts:
+                self._drafts[key]["save_error"] = failure["message"]
+        for status in self._products:
+            self._products[status] = dict(sorted(self._products[status].items(),
+                key=lambda pair: (search_text(pair[1].get("title")), pair[0])))
+        self._checkpoint_drafts(clear_when_empty=had_drafts and bool(originals))
+        self._update_filter_options()
+        self._fill_tables()
+        verb = {"save": "guardadas", "ready": "listas para subir", "pending": "devueltas a revisión", "delete": "borradas"}[worker.action]
         if worker.error is not None:
-            self._set_feedback(f"No se pudo confirmar la operación. {worker.error}")
+            message = (f"{len(originals)} ficha(s) guardadas antes de interrumpirse la conexión. "
+                       if originals else "No se pudo confirmar la operación. ")
+            self._set_feedback(message + str(worker.error) +
+                               " Los cambios no confirmados siguen pendientes.", kind="error")
+        elif failed:
+            details = "\n".join(f"{row['original_isbn']}: {row['message']}" for row in failed[:8])
+            extra = f"\nY {len(failed)-8} más; consulta la columna Revisión." if len(failed) > 8 else ""
+            self._set_feedback(f"{len(originals)} ficha(s) {verb}. {len(failed)} pendientes con problemas; "
+                               "sus cambios se conservan.\n" + details + extra, kind="error")
         else:
-            result = worker.result
-            originals = (result["deleted"] if worker.action == "delete" else
-                         [entry["original_isbn"] for entry in result["saved"]])
-            for original in originals:
-                for rows in self._products.values():
-                    rows.pop(original, None)
-                self._drafts.pop(original, None)
-                self._selected.discard(original)
-            if worker.action != "delete":
-                for entry in result["saved"]:
-                    product = entry["product"]
-                    self._products[product["review_status"]][str(product["isbn"])] = product
-                    original = entry["original_isbn"]
-                    if original in self._sd_results and self._sd_results[original].get("changed"):
-                        record = self._sd_results.pop(original)
-                        record["saved"] = True
-                        self._sd_results[str(product["isbn"])] = record
-            for status in self._products:
-                self._products[status] = dict(sorted(self._products[status].items(),
-                    key=lambda pair: (search_text(pair[1].get("title")), pair[0])))
-            self._update_filter_options()
-            self._fill_tables()
-            verb = {"save": "guardadas", "ready": "listas para subir", "pending": "devueltas a revisión", "delete": "borradas"}[worker.action]
-            self._set_feedback(f"{len(originals)} ficha(s) {verb}.")
+            self._set_feedback(f"{len(originals)} ficha(s) {verb}.", kind="success")
         worker.deleteLater()
         self._update_actions()
 
@@ -769,10 +926,10 @@ class PendingReviewWindow(QWidget):
                                     published=published, tax_class=tax, wordpress_reference=reference,
                                     allow_incomplete=True)
         except (OSError, ValueError) as error:
-            self._set_feedback(f"No se pudo generar el CSV. {error}")
+            self._set_feedback(f"No se pudo generar el CSV. {error}", kind="error")
             return
         self._set_feedback(f"CSV generado: {count} ficha(s). {path}\n"
-                           "En WordPress, comprueba el mapeo de «Estado Yumekai» y los campos Meta: _yk_.")
+                           "En WordPress, comprueba el mapeo de «Estado Yumekai» y los campos Meta: _yk_.", kind="success")
 
     def can_leave(self):
         if self._busy:

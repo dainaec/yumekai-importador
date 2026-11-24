@@ -7,8 +7,7 @@ from urllib.request import Request, urlopen
 
 from lxml import html
 
-from yumekai_importer.catalog.review_fields import normalize_review_isbn
-from yumekai_importer.importers.excel_values import normalize_isbn
+from yumekai_importer.importers.sd.codes import normalize_sd_code
 from yumekai_importer.importers.sd.details import (
     SdDetails, _is_sd_url, _is_legacy_detail_url, _main_article, _parse_details, _parse_public_details,
     _public_detail_url, _ssl_context, _text,
@@ -62,7 +61,7 @@ def _fetch_page(url: str, stop_requested: Event) -> tuple[html.HtmlElement, str]
 
 def _detail_isbn(page):
     article = _main_article(page)
-    return normalize_isbn(_text(article, 'txtISBN')) or normalize_isbn(_text(article, 'txtEan'))
+    return normalize_sd_code(_text(article, 'txtISBN')) or normalize_sd_code(_text(article, 'txtEan'))
 
 
 def _detail_stock(page):
@@ -96,7 +95,9 @@ def _read_public_detail(page, source_url, isbn, stop):
 
 def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupResult:
     stop = stop_requested if stop_requested is not None else Event()
-    normalized = normalize_review_isbn(isbn)
+    normalized = normalize_sd_code(isbn)
+    if normalized is None:
+        raise ValueError('La ficha no tiene un código para buscar en SD.')
     url = SD_CATALOG_URL + '?' + urlencode({'query': normalized, 'reset': 's'})
     page, final = _fetch_page(url, stop)
     if page.get_element_by_id('txtISBN', None) is not None or page.get_element_by_id('txtEan', None) is not None:
@@ -114,7 +115,7 @@ def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupRe
     matched = False
     for card in page.find_class('fileproduct'):
         fields = card.find_class('dvISBN')
-        actual = normalize_isbn(fields[0].text_content().strip()) if fields else None
+        actual = normalize_sd_code(fields[0].text_content()) if fields else None
         if actual != normalized:
             continue
         matched = True

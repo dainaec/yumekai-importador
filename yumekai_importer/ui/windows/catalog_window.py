@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 from yumekai_importer.ui.windows.import_window import ImportWindow
 from yumekai_importer.ui.windows.pending_review_window import PendingReviewWindow
 from yumekai_importer.ui.widgets.catalog_home import CatalogHome
+from yumekai_importer.storage.review_draft_backup import ReviewDraftBackup
 
 
 class CatalogWindow(QWidget):
@@ -24,7 +25,7 @@ class CatalogWindow(QWidget):
 
         self._pages = QStackedWidget()
         self._import_page = ImportWindow()
-        self._review_page = PendingReviewWindow()
+        self._review_page = PendingReviewWindow(draft_backup=ReviewDraftBackup())
         destinations = (
             ("Importar", self._import_page),
             ("Revisar pendientes", self._review_page),
