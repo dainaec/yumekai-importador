@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+require_once __DIR__ . '/exception_rules.php';
 
 const REVIEW_COLUMNS = 'isbn, title, retail_price, sale_price, author, description, categories,
     image_url, publisher, series, volume, language, book_format, pages, work_type,
@@ -23,14 +24,7 @@ function review_response(int $status, array $body): void
 
 function review_isbn_valid(string $isbn): bool
 {
-    if (preg_match('/\A97[89][0-9]{10}\z/', $isbn) !== 1) {
-        return false;
-    }
-    $sum = 0;
-    for ($i = 0; $i < 13; $i++) {
-        $sum += (int) $isbn[$i] * ($i % 2 === 0 ? 1 : 3);
-    }
-    return $sum % 10 === 0;
+    return standard_isbn13($isbn);
 }
 
 function review_stock_code($code): string
@@ -113,9 +107,8 @@ function review_changes(array $changes, string $isbn): void
             throw new ReviewRequestError('La solicitud contiene un campo que no se puede editar.', 400);
         }
     }
-    if (array_key_exists('isbn', $changes) && (!is_string($changes['isbn'])
-        || preg_match('/\A[0-9]{1,13}\z/', $changes['isbn']) !== 1)) {
-        throw new ReviewRequestError("El identificador de {$isbn} debe contener entre 1 y 13 dígitos.", 400);
+    if (array_key_exists('isbn', $changes) && !product_code_valid($changes['isbn'])) {
+        throw new ReviewRequestError("El código de {$isbn} es obligatorio y admite hasta 128 caracteres sin caracteres de control.", 400);
     }
     if (array_key_exists('is_featured', $changes) && !in_array($changes['is_featured'], [0, 1], true)) {
         throw new ReviewRequestError("Revisa el valor de Destacado en {$isbn}.", 400);
@@ -127,9 +120,20 @@ function review_changes(array $changes, string $isbn): void
     review_validate_numbers($changes, $isbn, array_keys($changes));
 }
 
-function review_computed(array $product, string $target, string $original): array
+function review_computed(array $product, string $target, string $original, bool $exceptionsConfirmed = false): array
 {
-    // List membership is a user's decision. Completeness is reported before CSV export.
+    if ($target === 'ready_to_upload') {
+        if (!product_code_valid($product['isbn'] ?? null)
+            || trim((string) ($product['title'] ?? '')) === ''
+            || !in_array(review_stock_code($product['yumekai_status'] ?? null),
+                         ['instock', 'outofstock', 'onbackorder', 'yk_on_demand'], true)) {
+            throw new ReviewRequestError("{$original}: código, título y estado Yumekai son obligatorios para pasar a listas.", 400);
+        }
+        $warnings = product_exception_warnings($product, true);
+        if ($warnings !== [] && !$exceptionsConfirmed) {
+            throw new ReviewRequestError("Autoriza expresamente las excepciones de {$original} antes de pasar a listas: " . implode('; ', $warnings), 400);
+        }
+    }
     $type = trim($product['work_type'] ?? '');
     $demographic = strcasecmp($type, 'Manga') === 0 ? (review_demographic($product['demographic'] ?? null) ?? '') : '';
     $categories = $type === '' ? [] : [$type];

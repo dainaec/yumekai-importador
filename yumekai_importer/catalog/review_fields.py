@@ -6,7 +6,7 @@ from yumekai_importer.catalog.classification import canonical_demographic
 VOLUME_INPUT = r"[0-9]{1,10}(?:-[0-9]{1,10})?"
 PAGES_INPUT = r"[0-9]{1,10}"
 PRICE_INPUT = r"[0-9]{1,8}(?:[.,][0-9]{1,2})?"
-ISBN_INPUT = r"[0-9 -]{0,26}"
+ISBN_INPUT = r"[^\x00-\x1f\x7f]{0,128}"
 
 BOOK_FORMATS = (
     "Rústica",
@@ -18,11 +18,13 @@ BOOK_FORMATS = (
 
 
 def normalize_review_identifier(text: str) -> str:
-    code = re.sub(r"[\s-]+", "", text)
-    if not re.fullmatch(r"[0-9]{1,13}", code):
-        raise ValueError("El identificador de la ficha debe contener entre 1 y 13 dígitos. "
-                         "Los avisos sobre la validez del ISBN se mostrarán antes de exportar.")
-    return code
+    code = str(text).strip()
+    if not code:
+        raise ValueError("Falta el ISBN o código del producto.")
+    if len(code) > 128 or re.search(r"[\x00-\x1f\x7f]", code):
+        raise ValueError("El código admite hasta 128 caracteres y no puede contener saltos de línea ni caracteres de control.")
+    compact = re.sub(r"[\s-]+", "", code)
+    return compact if re.fullmatch(r"[0-9]{13}", compact) else code
 
 
 def normalize_review_isbn(text: str) -> str:

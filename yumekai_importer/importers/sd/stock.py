@@ -11,7 +11,7 @@ from itertools import count
 import truststore
 from lxml import html
 
-from yumekai_importer.importers.excel_values import normalize_isbn
+from yumekai_importer.importers.sd.codes import normalize_sd_code
 from yumekai_importer.importers.sd.availability import SdStockInfo
 
 
@@ -55,6 +55,10 @@ def read_sd_stock(
 ) -> dict[str, bool]:
     if not isbns:
         return {}
+    # SD's comparison key is separate from the literal code saved in the catalog.
+    originals = {}
+    for requested in isbns:
+        originals.setdefault(normalize_sd_code(requested), set()).add(requested)
 
     context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     client = build_opener(HTTPCookieProcessor(CookieJar()), HTTPSHandler(context=context))
@@ -94,12 +98,12 @@ def read_sd_stock(
         page_isbns = set()
         for card in page.find_class("fileproduct"):
             isbn_fields = card.find_class("dvISBN")
-            isbn = normalize_isbn(isbn_fields[0].text_content().strip()) if isbn_fields else None
-            if isbn is None:
+            code = normalize_sd_code(isbn_fields[0].text_content()) if isbn_fields else ""
+            if not code:
                 continue
 
-            page_isbns.add(isbn)
-            if isbn not in isbns:
+            page_isbns.add(code)
+            if code not in originals:
                 continue
 
             if detail_urls is not None:
@@ -109,13 +113,15 @@ def read_sd_stock(
                     article_url = urljoin(catalog_url, hrefs[0])
                     parts = urlsplit(article_url)
                     if parts.scheme == "https" and parts.hostname == "www.sddistribuciones.com":
-                        detail_urls.setdefault(isbn, article_url)
+                        for isbn in originals[code]:
+                            detail_urls.setdefault(isbn, article_url)
 
             status_fields = card.find_class("estado")
             if status_fields:
                 available = _availability(status_fields[0].text_content())
                 if available is not None:
-                    results.setdefault(isbn, set()).add(available)
+                    for isbn in originals[code]:
+                        results.setdefault(isbn, set()).add(available)
 
         signature = frozenset(page_isbns)
         if not signature:
@@ -124,7 +130,8 @@ def read_sd_stock(
             raise ValueError("SD ha repetido la misma página del listado.")
         seen_pages.add(signature)
 
-        found_isbns.update(page_isbns & isbns)
+        for code in page_isbns & originals.keys():
+            found_isbns.update(originals[code])
         for isbn, values in results.items():
             if len(values) == 1:
                 partial[isbn] = next(iter(values))

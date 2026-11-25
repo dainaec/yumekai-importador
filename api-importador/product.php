@@ -14,9 +14,10 @@ if ($method !== 'GET' && $method !== 'POST') {
     exit;
 }
 
+require_once __DIR__ . '/exception_rules.php';
 $isbn = $_GET['isbn'] ?? '';
 
-if (!is_string($isbn) || preg_match('/\A[0-9]{13}\z/', $isbn) !== 1) {
+if (!product_code_valid($isbn)) {
     http_response_code(400);
     echo '{"error":"invalid_isbn"}';
     exit;

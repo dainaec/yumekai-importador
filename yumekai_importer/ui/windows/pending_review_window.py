@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
 )
 
 from yumekai_importer.catalog.review_fields import review_categories, sale_price_preview
+from yumekai_importer.catalog.exception_rules import required_issues, ready_exception_issues
+from yumekai_importer.ui.widgets.exception_approval_dialog import confirm_exceptions
 from yumekai_importer.catalog.sd_review import sd_review_changes
 from yumekai_importer.catalog.classification import canonical_demographic
 from yumekai_importer.catalog.duplicate_titles import find_duplicate_titles
@@ -832,15 +834,55 @@ class PendingReviewWindow(QWidget):
     def _start_action(self, action, entries):
         if self._busy or not entries:
             return
+        entries, failed = self._preflight_entries(action, entries)
+        if entries is None:  # Cancelled: keep every selection and draft.
+            return
+        if not entries:
+            self._set_feedback("No se ha enviado ninguna ficha.\n" + "\n".join(
+                f"{row['original_isbn']}: {row['message']}" for row in failed[:8]), kind="error")
+            return
         api = self._api()
         if api is None:
             return
         self._checkpoint_drafts()
         self._action_worker = ReviewActionWorker(api, action, entries, self)
+        self._action_worker.preflight_failed = failed
         self._action_worker.finished.connect(self._finish_action)
         self._set_feedback("Borrando fichas…" if action == "delete" else "Guardando fichas…")
         self._update_actions()
         self._action_worker.start()
+
+    def _preflight_entries(self, action, entries):
+        warnings, valid, failed = {}, [], []
+        for original_entry in entries:
+            entry = dict(original_entry)
+            entry.pop("exceptions_confirmed", None)  # Permission belongs to this attempt only.
+            key = entry["original_isbn"]
+            ready = action == "ready" or (action == "save" and entry.get("ready_to_upload"))
+            if ready:
+                product = {**self._current_product(key), **entry.get("changes", {})}
+                mandatory = required_issues(product)
+                if mandatory:
+                    failed.append({"original_isbn": key, "message": " · ".join(mandatory)})
+                    continue
+                issues = ready_exception_issues(product)
+                if issues:
+                    warnings[key] = {"product": product, "issues": issues}
+            valid.append(entry)
+        approved = confirm_exceptions(warnings, parent=self, purpose="Pasar a Listas para subir",
+                                      normal_count=len(valid) - len(warnings))
+        if approved is None:
+            return None, []
+        sending = []
+        for entry in valid:
+            key = entry["original_isbn"]
+            if key in warnings:
+                if key not in approved:
+                    failed.append({"original_isbn": key, "message": "Excepción sin autorizar; sigue pendiente."})
+                    continue
+                entry["exceptions_confirmed"] = True
+            sending.append(entry)
+        return sending, failed
 
     def _finish_action(self):
         worker = self._action_worker
@@ -863,7 +905,7 @@ class PendingReviewWindow(QWidget):
                     record = self._sd_results.pop(original)
                     record["saved"] = True
                     self._sd_results[str(product["isbn"])] = record
-        failed = result.get("failed", [])
+        failed = [*result.get("failed", []), *getattr(worker, "preflight_failed", [])]
         for failure in failed:
             key = failure["original_isbn"]
             if key in self._drafts:

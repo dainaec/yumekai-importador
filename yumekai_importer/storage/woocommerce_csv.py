@@ -8,7 +8,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from yumekai_importer.catalog.classification import ARTBOOK_CATEGORY, canonical_demographic
-from yumekai_importer.catalog.review_fields import normalize_price, normalize_review_isbn, sale_price_preview
+from yumekai_importer.catalog.review_fields import normalize_price, normalize_review_identifier, sale_price_preview
 from yumekai_importer.catalog.review_workflow import readiness_issues, stock_code
 
 HEADERS = (
@@ -68,10 +68,16 @@ def load_wordpress_reference(path: str | Path) -> dict[str, WordPressReference]:
                     return str(row.get(columns.get(name, "")) or "").strip()
                 candidates = set()
                 sku = field("sku")
-                for value in (field("meta:_yk_isbn"), field("gtin,upc,eanoisbn"),
-                              sku[4:] if sku.startswith("YMK-") else ""):
+                for value in (field("meta:_yk_isbn"), field("gtin,upc,eanoisbn")):
                     try:
-                        candidates.add(normalize_review_isbn(value))
+                        candidates.add(normalize_review_identifier(value))
+                    except ValueError:
+                        pass
+                # Legacy SKUs can be mnemonic (YMK-MAN-HIR-003). Explicit identity
+                # metadata wins; only use a SKU when no identity field is present.
+                if not candidates and sku.startswith("YMK-"):
+                    try:
+                        candidates.add(normalize_review_identifier(sku[4:]))
                     except ValueError:
                         pass
                 if not candidates:

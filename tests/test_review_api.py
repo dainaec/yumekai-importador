@@ -28,7 +28,7 @@ class ReviewPhpTests(unittest.TestCase):
         cls.database = cls.root / 'catalog.sqlite'
         api_dir = cls.root / 'public' / 'importer-api'
         api_dir.mkdir(parents=True)
-        for name in ('review_common.php', 'products.php', 'review_products.php'):
+        for name in ('review_common.php', 'exception_rules.php', 'products.php', 'review_products.php', 'create_product.php', 'product.php'):
             shutil.copyfile(Path(__file__).resolve().parents[1] / 'api-importador' / name, api_dir / name)
         private = cls.root / 'importer-private'
         private.mkdir()
@@ -49,7 +49,8 @@ return $p;
                 author TEXT, description TEXT, categories TEXT, image_url TEXT, publisher TEXT,
                 series TEXT, volume TEXT, language TEXT, book_format TEXT, pages INTEGER,
                 work_type TEXT, demographic TEXT, yumekai_status TEXT, sku TEXT UNIQUE,
-                is_featured INTEGER, review_status TEXT, updated_at TEXT)''')
+                is_featured INTEGER DEFAULT 0, review_status TEXT DEFAULT 'pending_review',
+                updated_at TEXT DEFAULT '2026-11-24 20:00:00', woocommerce_id INTEGER)''')
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
             port = sock.getsockname()[1]
@@ -88,6 +89,8 @@ return $p;
                     work_type,demographic,yumekai_status,is_featured,review_status,updated_at)
                     VALUES (?,?,'9.00','[]','Milky Way','3','Manga','Seinen','instock',0,
                             'pending_review','2026-11-23 18:30:00')''', (isbn, 'Obra ' + isbn))
+            db.execute("""UPDATE products SET author='Autora', series='Colección', language='Castellano',
+                book_format='Rústica', pages=200, description='Sinopsis completa', image_url='https://example.com/a.jpg'""")
 
     def rows(self, status='pending_review'):
         r = requests.get(self.url + '/products.php', params={'review_status': status}, timeout=2)
@@ -137,10 +140,13 @@ return $p;
             with path.open(encoding='utf-8-sig', newline='') as stream:
                 self.assertEqual(next(csv.DictReader(stream))['Descripción'], synopsis)
 
-    def test_ready_transition_accepts_missing_prices_in_the_entire_batch(self):
+    def test_ready_transition_requires_explicit_permission_for_missing_price(self):
         with sqlite3.connect(self.database) as db:
             db.execute('UPDATE products SET retail_price=NULL WHERE isbn=?', (self.other,))
-        self.action('ready', [self.entry(self.isbn), self.entry(self.other)])
+        self.action('ready', [self.entry(self.isbn), self.entry(self.other)], expected=400)
+        self.assertEqual(len(self.rows()), 2)
+        other = self.entry(self.other) | {'exceptions_confirmed': True}
+        self.action('ready', [self.entry(self.isbn), other])
         self.assertEqual(self.rows(), [])
         self.assertEqual(len(self.rows('ready_to_upload')), 2)
 
@@ -154,7 +160,8 @@ return $p;
         with sqlite3.connect(self.database) as db:
             db.execute('UPDATE products SET isbn=? WHERE isbn=?', ('1234567890123', self.isbn))
         self.action('save', [self.entry('1234567890123', changes={'author': 'Corregida'})])
-        self.action('ready', [self.entry('1234567890123')])
+        self.action('ready', [self.entry('1234567890123')], expected=400)
+        self.action('ready', [self.entry('1234567890123') | {'exceptions_confirmed': True}])
         self.action('save', [self.entry('1234567890123', changes={'isbn': self.isbn},
                                        status='ready_to_upload', ready=True)])
         self.assertEqual(len(self.rows('ready_to_upload')), 1)
@@ -238,6 +245,72 @@ return $p;
         self.assertEqual(row['review_status'], 'ready_to_upload')
         entry = self.entry(status='ready_to_upload', changes={'demographic': 'x' * 101}, ready=True)
         self.action('save', [entry], expected=400)
+
+    def test_nonstandard_import_requires_permission_and_round_trips_without_truncation(self):
+        from yumekai_importer.catalog.product import Product
+        from yumekai_importer.storage.woocommerce_csv import export_products
+        import csv
+        code = '979137007773010003'
+        api = CatalogApi(self.url, 'test', 'test')
+        imported = Product(code, 'Edición con código completo')
+        with self.assertRaisesRegex(ValueError, 'Autoriza expresamente'):
+            api.create_products([imported])
+        for wrong in (False, 1, 'true'):
+            response = requests.post(self.url + '/create_product.php',
+                json={'products': [{'isbn': code, 'title': imported.title, 'exceptions_confirmed': wrong}]}, timeout=2)
+            self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(api.create_products([imported], approved_exceptions={code}), {'created': 1, 'duplicates': 0})
+        row = next(p for p in self.rows() if p['isbn'] == code)
+        self.assertIsNone(row['retail_price'])
+        self.action('ready', [self.entry(code) | {'exceptions_confirmed': True}], expected=400)  # No state.
+        entry = self.entry(code, changes={'yumekai_status': 'outofstock'}, ready=True)
+        self.action('save', [entry], expected=400)  # Optional data still needs permission.
+        result = self.action('save', [entry | {'exceptions_confirmed': True}])
+        saved = result['saved'][0]['product']
+        self.assertEqual(saved['isbn'], code)
+        self.assertEqual(saved['sku'], 'YMK-' + code)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'nonstandard.csv'
+            export_products(path, [saved], allow_incomplete=True)
+            with path.open(encoding='utf-8-sig', newline='') as stream:
+                exported = next(csv.DictReader(stream))
+        self.assertEqual(exported['Meta: _yk_isbn'], code)
+        self.assertEqual(exported['SKU'], 'YMK-' + code)
+        self.assertEqual(exported['Precio normal'], '')
+        self.assertEqual(exported['Precio rebajado'], '')
+
+    def test_permission_cannot_replace_mandatory_fields(self):
+        for field, value in (('title', ''), ('yumekai_status', None)):
+            with self.subTest(field=field):
+                entry = self.entry(changes={field: value}, ready=True) | {'exceptions_confirmed': True}
+                self.action('save', [entry], expected=400)
+        for code, title in (('', 'Obra'), ('123', ''), ('bad\ncode', 'Obra')):
+            response = requests.post(self.url + '/create_product.php', json={
+                'isbn': code, 'title': title, 'exceptions_confirmed': True}, timeout=2)
+            self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_arbitrary_code_can_be_corrected_loaded_and_deleted(self):
+        for code in ('PACK-ABC / 03', '000012', 'ñ-商品-001', 'X' * 128):
+            with self.subTest(code=code):
+                original = self.entry(changes={'isbn': code})
+                self.action('save', [original])
+                response = requests.get(self.url + '/product.php', params={'isbn': code}, timeout=2)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['isbn'], code)
+                result = self.action('save', [self.entry(code, changes={'isbn': self.isbn})])
+                self.assertEqual(result['saved'][0]['product']['isbn'], self.isbn)
+
+    def test_missing_optional_data_requires_permission_but_can_be_kept_empty(self):
+        changes = {field: None for field in ('retail_price', 'pages', 'volume', 'language', 'author',
+                   'series', 'publisher', 'work_type', 'demographic', 'description', 'image_url', 'book_format')}
+        entry = self.entry(changes=changes, ready=True)
+        self.action('save', [entry], expected=400)
+        self.action('save', [entry | {'exceptions_confirmed': 'true'}], expected=400)
+        saved = self.action('save', [entry | {'exceptions_confirmed': True}])['saved'][0]['product']
+        self.assertEqual(saved['review_status'], 'ready_to_upload')
+        for field in changes:
+            self.assertIsNone(saved[field], field)
 
 
 if __name__ == '__main__':

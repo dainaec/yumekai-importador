@@ -67,9 +67,13 @@ try {
     $isbnById = [];
     $invalid = 0;
     foreach ($storeProducts as $product) {
-        $isbn = preg_replace('/[\s-]+/u', '', (string) $product['isbn']);
+        $isbn = trim((string) $product['isbn']);
+        $compact = preg_replace('/[\s-]+/u', '', $isbn);
+        if (is_string($compact) && preg_match('/\A[0-9]{13}\z/', $compact)) {
+            $isbn = $compact;
+        }
         $id = (int) $product['woocommerce_id'];
-        if (!is_string($isbn) || !review_isbn_valid($isbn) || $id < 1) {
+        if (!product_code_valid($isbn) || $id < 1) {
             $invalid++;
             continue;
         }

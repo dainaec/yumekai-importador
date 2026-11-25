@@ -2,7 +2,8 @@ from dataclasses import dataclass, field
 
 from yumekai_importer.catalog.product import Product
 from yumekai_importer.catalog.title_parser import analyze_title, collection_context, infer_series_and_volume
-from yumekai_importer.importers.excel_values import normalize_isbn, parse_price
+from yumekai_importer.importers.excel_values import parse_price
+from yumekai_importer.catalog.review_fields import normalize_review_identifier, normalize_review_isbn
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,11 @@ class ImportResult:
             "Ref": sd_reference,
             "Portada (URL)": image_url,
         }
-        isbn = normalize_isbn(isbn_value)
+        raw_code = int(isbn_value) if isinstance(isbn_value, float) and isbn_value.is_integer() else isbn_value
+        try:
+            isbn = normalize_review_identifier("" if raw_code is None else str(raw_code))
+        except ValueError:
+            isbn = None
         title = str(title_value or "").strip()
 
         if isbn is None:
@@ -61,6 +66,11 @@ class ImportResult:
             if isbn_value is not None and str(isbn_value).strip():
                 detail = f"ISBN no válido: {isbn_value!r}"
             self.issues.append(ImportIssue(row, title, "ISBN", detail))
+        else:
+            try:
+                normalize_review_isbn(isbn)
+            except ValueError:
+                self.issues.append(ImportIssue(row, title, "ISBN", f"Código no estándar: {isbn!r}. Requiere autorización manual para enviar."))
 
         if not title:
             self.issues.append(ImportIssue(row, title, "Título", "Falta el título."))
@@ -75,6 +85,8 @@ class ImportResult:
         else:
             if price is None:
                 self.issues.append(ImportIssue(row, title, "PVP", "Falta el PVP."))
+            elif price <= 0:
+                self.issues.append(ImportIssue(row, title, "PVP", "El PVP no es mayor que cero. Requiere autorización manual."))
 
         if isbn is None or not title:
             return

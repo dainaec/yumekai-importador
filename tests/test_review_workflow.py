@@ -227,10 +227,13 @@ class ReviewUiTests(unittest.TestCase):
         self.assertEqual(dialog.changes['retail_price'], '0.00')
         dialog.deleteLater()
 
-    def test_bulk_ready_allows_incomplete_products(self):
+    def test_bulk_ready_allows_incomplete_products_after_explicit_permission(self):
         self.window._products['pending_review'][self.p['isbn']]['retail_price'] = None
         self.window._toggle_visible()
-        self.window._mark_ready()
+        with patch('yumekai_importer.ui.windows.pending_review_window.confirm_exceptions',
+                   return_value={self.p['isbn']}) as confirm:
+            self.window._mark_ready()
+        self.assertIn(self.p['isbn'], confirm.call_args.args[0])
         self.wait_finished()
         self.assertEqual(self.api.calls[0][0], 'ready')
         self.assertEqual(len(self.window._products['ready_to_upload']), 2)

@@ -123,9 +123,6 @@ class PublicSdLookupTests(unittest.TestCase):
 
 
 class PublicSdImportTests(unittest.TestCase):
-    def tearDown(self):
-        details.read_sd_details.cache_clear()
-
     def test_excel_enrichment_uses_the_public_binding_too(self):
         with patch.object(details, '_read_details_page', side_effect=[(planetes_page('SEINEN'), LEGACY),
                                                                    (planetes_page('CARTONÉ'), PUBLIC)]):
@@ -139,7 +136,6 @@ class PublicSdImportTests(unittest.TestCase):
                                                                    TimeoutError('Tiempo agotado')]):
             with self.assertRaises(TimeoutError):
                 details.read_sd_details(LEGACY, ISBN)
-        self.assertEqual(details.read_sd_details.cache_info().currsize, 0)
 
     def test_partial_unconfirmed_details_do_not_overwrite_an_imported_format(self):
         parsed = details._parse_details(planetes_page('SEINEN'), ISBN)

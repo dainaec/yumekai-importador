@@ -31,9 +31,9 @@ def add(result, row, isbn="9780000000001", title="Manga 1", price=9, **extra):
 class ExportTests(TestCase):
     def test_rejected_rows_and_all_source_columns_survive_and_reimport(self):
         result = ImportResult()
-        source = {"ISBN": "INVALIDO", "Titulo": "=Título literal", "PVP": "mal",
+        source = {"ISBN": "", "Titulo": "=Título literal", "PVP": "mal",
                   "Ref": "PNI.12", "Extra": "no perder", "Autor": "Ana"}
-        add(result, 14, isbn="INVALIDO", title="=Título literal", price="mal", source_data=source)
+        add(result, 14, isbn="", title="=Título literal", price="mal", source_data=source)
         self.assertEqual(len(result.issues), 2)
         self.assertFalse(result.products)
         with TemporaryDirectory() as directory:
@@ -56,8 +56,8 @@ class ExportTests(TestCase):
 
     def test_duplicate_rows_and_enriched_data_are_kept(self):
         result = ImportResult()
-        add(result, 2, price=None)
-        add(result, 3, price=None)
+        add(result, 2, isbn="9788419914163", price=None)
+        add(result, 3, isbn="9788419914163", price=None)
         result.products_by_row[2].pages = 200
         with TemporaryDirectory() as directory:
             path = Path(directory) / "incidencias.xlsx"
@@ -85,7 +85,7 @@ class ExportTests(TestCase):
 
     def test_failed_export_does_not_replace_existing_file(self):
         result = ImportResult()
-        add(result, 2, isbn="mal")
+        add(result, 2, isbn="")
         with TemporaryDirectory() as directory:
             path = Path(directory) / "existing.xlsx"
             path.write_bytes(b"original")
@@ -196,7 +196,7 @@ class WindowTests(TestCase):
     def test_all_rejected_rows_can_be_exported_and_cancel_preserves_them(self):
         window = ImportWindow()
         result = ImportResult()
-        add(result, 2, isbn="mal")
+        add(result, 2, isbn="")
         window._show_result(result, "input.xlsx")
         self.assertTrue(window.export_issues_button.isEnabled())
         self.assertFalse(window.save_button.isEnabled())

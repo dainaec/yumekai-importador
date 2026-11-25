@@ -15,7 +15,7 @@ class ExportReviewDialog(QDialog):
         layout = QVBoxLayout(self)
         message = (f"{len(review)} de {total} fichas tienen datos pendientes o por comprobar. "
                    "Puedes devolver esas fichas a revisión o generar el CSV con los datos disponibles.\n"
-                   "Los ISBN se conservan aunque no sean válidos. Los precios que faltan o no se pueden "
+                   "Los códigos se conservan completos aunque no cumplan el estándar ISBN-13. Los precios que faltan o no se pueden "
                    "utilizar se exportan vacíos; un precio cero se conserva como cero.")
         label = QLabel(message)
         label.setWordWrap(True)

@@ -39,7 +39,7 @@ def readiness_issues(product: dict) -> list[str]:
     try:
         normalize_review_isbn(str(product.get("isbn") or ""))
     except ValueError:
-        issues.append("ISBN no válido")
+        issues.append("Código fuera del estándar ISBN-13; requiere autorización")
     if not str(product.get("title") or "").strip():
         issues.append("Falta título")
     for field, normalize in (("volume", normalize_volume), ("pages", normalize_pages), ("retail_price", normalize_price)):

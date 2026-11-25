@@ -4,6 +4,7 @@ ini_set('display_errors', '0');
 
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
+require_once __DIR__ . '/exception_rules.php';
 
 function send_json(int $status, array $body): void
 {
@@ -27,8 +28,8 @@ function product_values(array $data): array {
     $isbn = $data['isbn'] ?? null;
     $title = $data['title'] ?? null;
 
-    if (!is_string($isbn) || preg_match('/\A[0-9]{13}\z/', $isbn) !== 1) {
-        send_json(400, ['error' => 'invalid_isbn']);
+    if (!product_code_valid($isbn)) {
+        send_json(400, ['error' => 'invalid_isbn', 'message' => 'Falta el código o supera los 128 caracteres admitidos.']);
     }
 
     if (!is_string($title) || trim($title) === '' || strlen($title) > 65535) {
@@ -86,6 +87,11 @@ function product_values(array $data): array {
         $values[$field] = $value;
     }
 
+    $warnings = product_exception_warnings($values, false);
+    if ($warnings !== [] && ($data['exceptions_confirmed'] ?? false) !== true) {
+        send_json(400, ['error' => 'exceptions_confirmation_required',
+            'message' => "Autoriza expresamente las excepciones de {$isbn} antes de guardar: " . implode('; ', $warnings)]);
+    }
     return $values;
 }
 
@@ -157,5 +163,10 @@ try {
     }
 
     error_log('Yumekai create products: ' . $error->getCode());
+    if ($error instanceof PDOException && (int) ($error->errorInfo[1] ?? 0) === 1406
+        && preg_match('/isbn|sku/i', $error->errorInfo[2] ?? '')) {
+        send_json(400, ['error' => 'code_column_too_short',
+            'message' => 'El campo ISBN/SKU de la base de datos es demasiado corto. Ejecuta ampliar_codigos_productos.sql en la base del importador.']);
+    }
     send_json(500, ['error' => 'server_error']);
 }

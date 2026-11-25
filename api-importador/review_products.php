@@ -26,7 +26,7 @@ try {
     $entries = [];
     foreach ($payload->products as $entry) {
         if (!is_object($entry) || !is_string($entry->original_isbn ?? null)
-            || preg_match('/\A[0-9]{1,13}\z/', $entry->original_isbn) !== 1
+            || !product_code_valid($entry->original_isbn)
             || isset($entries[$entry->original_isbn])
             || !in_array($entry->expected_review_status ?? null, REVIEW_STATUSES, true)
             || !is_string($entry->expected_updated_at ?? null)
@@ -39,6 +39,9 @@ try {
         }
         if (isset($entry->changes) && !is_object($entry->changes)) {
             throw new ReviewRequestError('Los cambios no son válidos.', 400);
+        }
+        if (property_exists($entry, 'exceptions_confirmed') && !is_bool($entry->exceptions_confirmed)) {
+            throw new ReviewRequestError('La autorización de excepciones debe ser explícita.', 400);
         }
         $entries[$entry->original_isbn] = $entry;
     }
@@ -86,7 +89,8 @@ try {
         $current = array_replace($previous, $changes);
         $target = $action === 'ready' || ($action === 'save' && $entry->ready_to_upload)
             ? 'ready_to_upload' : 'pending_review';
-        $values = array_replace($changes, review_computed($current, $target, $original));
+        $values = array_replace($changes, review_computed($current, $target, $original,
+            ($entry->exceptions_confirmed ?? false) === true));
         $assignments = array_map(static function ($field) { return "{$field} = :{$field}"; }, array_keys($values));
         $update = $pdo->prepare('UPDATE products SET ' . implode(', ', $assignments) . ' WHERE isbn = :original_isbn');
         $update->execute($values + ['original_isbn' => $original]);
@@ -109,6 +113,10 @@ try {
     }
     if ($error instanceof PDOException && (int) ($error->errorInfo[1] ?? 0) === 1062) {
         review_response(409, ['message' => "El ISBN o SKU de {$original} ya pertenece a otra ficha."]);
+    }
+    if ($error instanceof PDOException && (int) ($error->errorInfo[1] ?? 0) === 1406
+        && preg_match('/isbn|sku/i', $error->errorInfo[2] ?? '')) {
+        review_response(400, ['message' => 'El campo ISBN/SKU de la base de datos es demasiado corto. Ejecuta ampliar_codigos_productos.sql en la base del importador.']);
     }
     if ($error instanceof PDOException && (int) ($error->errorInfo[1] ?? 0) === 1406
         && strpos(strtolower($error->errorInfo[2] ?? ''), 'demographic') !== false) {

@@ -133,17 +133,23 @@ class CatalogApi:
             raise ValueError("Respuesta incompleta. Recarga para comprobar el resultado.")
         return body
 
-    def create_products(self, products: list[Product]) -> dict[str, int]:
+    def create_products(self, products: list[Product], *, approved_exceptions=frozenset()) -> dict[str, int]:
         if not products:
             return {"created": 0, "duplicates": 0}
 
+        payloads = []
+        for product in products:
+            payload = _product_payload(product)
+            if product.isbn in approved_exceptions:
+                payload["exceptions_confirmed"] = True
+            payloads.append(payload)
         response = requests.post(
             self._create_product_url,
-            json={"products": [_product_payload(product) for product in products]},
+            json={"products": payloads},
             auth=self._auth,
             timeout=(5, 60),
         )
-        response.raise_for_status()
+        self._check_response(response, "create_product.php")
 
         counts = response.json()
         if not isinstance(counts, dict):

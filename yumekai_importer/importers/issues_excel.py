@@ -62,7 +62,7 @@ def export_import_issues(result: ImportResult, path: str | Path) -> int:
         _append(original, [
             *(source.get(header) for header in headers),
             row,
-            "Incluida en la carga; comprobar guardado" if eligible else "Descartada; no enviada a BD",
+            "Candidata; comprobar autorización y guardado" if eligible else "Descartada; no enviada a BD",
             " | ".join(f"{i.field}: {i.message}" for i in issues_by_row[row]),
         ])
 

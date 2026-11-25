@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
 )
 
 from yumekai_importer.catalog.product import Product, YumekaiStatus
+from yumekai_importer.catalog.exception_rules import import_exception_issues
+from yumekai_importer.ui.widgets.exception_approval_dialog import confirm_exceptions
 
 from yumekai_importer.importers.import_result import ImportResult
 from yumekai_importer.importers.issues_excel import export_import_issues
@@ -58,7 +60,9 @@ def _format_price(price: Decimal | None) -> str:
 
 STOCK_LABELS = {
     YumekaiStatus.ON_DEMAND: "Bajo demanda",
-    YumekaiStatus.OUT_OF_STOCK: "Agotado",
+    YumekaiStatus.OUT_OF_STOCK: "Sin existencias",
+    YumekaiStatus.IN_STOCK: "Hay existencias",
+    YumekaiStatus.ON_BACKORDER: "Se puede reservar",
 }
 
 class ImportWindow(QWidget):
@@ -232,7 +236,8 @@ class ImportWindow(QWidget):
         dialog.setText("Hay filas con incidencias que todavía no has exportado.")
         dialog.setInformativeText(
             "Guárdalas en un Excel para revisarlas después. "
-            "Las filas descartadas por ISBN o título no se envían a la base de datos."
+            "Las filas sin código o título no se envían. Los códigos no estándar y el PVP pendiente "
+            "se pueden autorizar manualmente al guardar la carga."
         )
         export_button = dialog.addButton("Exportar Excel", QMessageBox.ButtonRole.AcceptRole)
         discard_button = dialog.addButton("Continuar sin exportar", QMessageBox.ButtonRole.DestructiveRole)
@@ -291,6 +296,19 @@ class ImportWindow(QWidget):
         if not self._result.products or self._save_worker is not None:
             return
 
+        candidates = {str(index): product for index, product in enumerate(self._result.products)}
+        warnings = {key: {"product": vars(product), "issues": issues}
+                    for key, product in candidates.items()
+                    if (issues := import_exception_issues(vars(product)))}
+        approved = confirm_exceptions(warnings, parent=self, purpose="Guardar carga en el importador",
+                                      normal_count=len(candidates) - len(warnings))
+        if approved is None:
+            return
+        products = [product for key, product in candidates.items() if key not in warnings or key in approved]
+        if not products:
+            return
+        approved_codes = {candidates[key].isbn for key in approved}
+
         try:
             credentials = load_credentials()
         except Exception as error:
@@ -304,7 +322,8 @@ class ImportWindow(QWidget):
             return
 
         api = CatalogApi("https://yumekai.es/importer-api", *credentials)
-        self._save_worker = SaveImportWorker(api, self._result.products, self)
+        self._save_worker = SaveImportWorker(api, products, self, approved_exceptions=approved_codes)
+        self._save_worker.skipped_exceptions = len(candidates) - len(products)
         self._save_worker.finished.connect(self._finish_save)
         self._set_saving(True)
         self._save_worker.start()
@@ -437,6 +456,7 @@ class ImportWindow(QWidget):
             self,
             "Resultado del guardado",
             f"Fichas nuevas: {counts['created']}\nISBN repetidos: {counts['duplicates']}"
+            f"\nExcepciones sin autorizar, no enviadas: {worker.skipped_exceptions}."
             f"{issue_note}",
         )
 

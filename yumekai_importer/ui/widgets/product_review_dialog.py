@@ -44,6 +44,7 @@ from yumekai_importer.catalog.review_fields import (
 )
 from yumekai_importer.ui.widgets.isbn_field import IsbnField, ReviewCheckBox
 from yumekai_importer.catalog.classification import DEMOGRAPHICS, canonical_demographic
+from yumekai_importer.catalog.exception_rules import required_issues
 
 
 _WORK_FIELDS = (
@@ -444,6 +445,11 @@ class ProductReviewDialog(QDialog):
 
         self.changes = changes
         self.ready_to_upload = self._ready.isChecked()
+        if self.ready_to_upload:
+            issues = required_issues({**self._product, **changes})
+            if issues:
+                self._show_error(" · ".join(issues), self._editors["yumekai_status"])
+                return
         super().accept()
 
     def _show_error(self, message: str, editor: QWidget) -> None:

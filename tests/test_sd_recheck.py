@@ -145,17 +145,17 @@ class SdLookupTests(unittest.TestCase):
 
 
 class MergeTests(unittest.TestCase):
-    def test_fills_only_missing_fields_and_keeps_store_stock(self):
+    def test_fills_missing_metadata_and_applies_sd_stock_even_to_store_stock(self):
         p = product(author='Mi autora', retail_price='9.00', pages=None, book_format=None,
                     description='', yumekai_status='instock')
         changes, note = sd_review_changes(p, SdLookupResult(ISBN, 'found', False, DETAILS))
         self.assertNotIn('author', changes)
         self.assertNotIn('retail_price', changes)
-        self.assertNotIn('yumekai_status', changes)
+        self.assertEqual(changes['yumekai_status'], 'outofstock')
         self.assertEqual(changes['description'], 'Sinopsis SD')
         self.assertEqual(changes['book_format'], 'Rústica')
         self.assertEqual(changes['pages'], 200)
-        self.assertIn('Estado de tienda conservado', note)
+        self.assertNotIn('Estado de tienda conservado', note)
 
     def test_known_wholesaler_stock_updates_demand_but_unknown_does_not(self):
         p = product(yumekai_status='outofstock')
