@@ -2,6 +2,34 @@
 import html
 import re
 import unicodedata
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class DescriptionFormat:
+    text: str | None
+    changed: bool = False
+    note: str = ""
+
+
+def format_description(value: object) -> DescriptionFormat:
+    """Reflow plain prose, leaving paragraph breaks and special layouts intact."""
+    if value is None:
+        return DescriptionFormat(None)
+    original = str(value)
+    if re.search(r"<\s*(?:[a-zA-Z][\w:-]*(?:\s|/?>)|!--)", original):
+        return DescriptionFormat(original, note="Sinopsis con HTML: formato conservado para revisión manual.")
+    normalized = original.replace("\r\n", "\n").replace("\r", "\n")
+    # Lists, dialogue, indentation and split words need a human decision.
+    lines = normalized.split("\n")
+    if any(re.match(r"^\s*(?:[-*•▪–—]|\d+[.)])\s+", line) or line.startswith(("\t", "    "))
+           for line in lines) or re.search(r"\w-\s*\n\s*\w", normalized):
+        return DescriptionFormat(original, note="Sinopsis con lista, diálogo o palabra partida: revisar formato manualmente.")
+    paragraphs = re.split(r"\n[\t ]*\n(?:[\t ]*\n)*", normalized.strip())
+    text = "\n\n".join(re.sub(r"[\t ]+", " ", re.sub(r"[\t ]*\n[\t ]*", " ", p)).strip()
+                       for p in paragraphs)
+    return DescriptionFormat(text, text != original,
+                             "Sinopsis: saltos de línea y espacios normalizados." if text != original else "")
 
 
 def description_may_be_shortened(value: object) -> bool:

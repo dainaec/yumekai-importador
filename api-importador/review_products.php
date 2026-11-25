@@ -105,6 +105,7 @@ try {
     $pdo->commit();
     review_response(200, $action === 'delete' ? ['deleted' => $deleted] : ['saved' => $saved]);
 } catch (Throwable $error) {
+    yumekai_log('request.failed', ['type' => get_class($error), 'message' => $error->getMessage()]);
     if ($pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();
     }

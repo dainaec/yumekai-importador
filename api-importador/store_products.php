@@ -1,11 +1,13 @@
 <?php
 
 declare(strict_types=1);
+require_once __DIR__ . "/event_log.php";
 
 ini_set('display_errors', '0');
 
 function store_response(int $status, array $data): void
 {
+    yumekai_response_event($status, $data);
     http_response_code($status);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
@@ -76,6 +78,7 @@ try {
 
     store_response(200, $products);
 } catch (Throwable $error) {
+    yumekai_log('request.failed', ['type' => get_class($error), 'message' => $error->getMessage()]);
     while (ob_get_level() > $bufferLevel) {
         ob_end_clean();
     }

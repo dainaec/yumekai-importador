@@ -1,7 +1,15 @@
 import requests
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import local
+from time import perf_counter
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from yumekai_importer.catalog.product import Product
 from yumekai_importer.catalog.classification import canonical_demographic
+from yumekai_importer.diagnostics import logger, register_secret
+from yumekai_importer.version import APP_VERSION
 
 
 class CatalogRequestError(ValueError):
@@ -45,21 +53,50 @@ def _product_payload(product: Product) -> dict[str, object]:
     }
 
 class CatalogApi:
+    STORE_PAGE_WORKERS = 3
+
     def __init__(self, base_url: str, username: str, password: str):
         self._products_url = f"{base_url.rstrip('/')}/products.php"
         self._create_product_url = f"{base_url.rstrip('/')}/create_product.php"
         self._review_url = f"{base_url.rstrip('/')}/review_products.php"
         self._sync_store_url = f"{base_url.rstrip('/')}/sync_store.php"
+        self._store_review_url = f"{base_url.rstrip('/')}/store_review.php"
         self._inventory_products_url = (
             f"{base_url.rstrip('/')}/inventory_products.php"
         )
         self._auth = (username, password)
+        self._sessions = local()
+        register_secret(password)
+
+    def _request(self, method, url, **kwargs):
+        session = getattr(self._sessions, 'http', None)
+        if session is None:
+            session = self._sessions.http = requests.Session()
+            session.headers['X-Yumekai-Version'] = APP_VERSION
+        endpoint = urlsplit(url).path.rsplit('/', 1)[-1]
+        payload = kwargs.get('json', {})
+        if isinstance(payload, dict) and 'products' in payload:
+            logger.info('api.operation endpoint=%s action=%s products=%s', endpoint,
+                        payload.get('action', 'save'), len(payload['products']))
+        request_id = uuid4().hex[:16]
+        kwargs['headers'] = {**kwargs.get('headers', {}), 'X-Yumekai-Request-Id': request_id}
+        started = perf_counter()
+        logger.info('api.request id=%s method=%s endpoint=%s', request_id, method, endpoint)
+        try:
+            response = session.request(method, url, **kwargs)
+        except requests.exceptions.RequestException:
+            logger.exception('api.connection_failed method=%s endpoint=%s elapsed=%.2fs',
+                             method, endpoint, perf_counter() - started)
+            raise
+        logger.log(40 if not response.ok else 20, 'api.response id=%s method=%s endpoint=%s status=%s elapsed=%.2fs',
+                   request_id, method, endpoint, response.status_code, perf_counter() - started)
+        return response
 
     def list_pending_products(self) -> list[dict[str, object]]:
         return self.list_products("pending_review")
 
     def list_products(self, review_status: str) -> list[dict[str, object]]:
-        response = requests.get(
+        response = self._request('GET',
             self._products_url,
             params={"review_status": review_status},
             auth=self._auth,
@@ -91,8 +128,11 @@ class CatalogApi:
     def review_products(self, action: str, products: list[dict]) -> dict:
         if action not in {"save", "ready", "pending", "delete"} or not products:
             raise ValueError("Selecciona fichas y una acción válida.")
+        for product in products:
+            logger.info('catalog.review_requested action=%s isbn=%s fields=%s', action,
+                        product.get('original_isbn'), sorted(product.get('changes', {})))
         try:
-            response = requests.post(
+            response = self._request('POST',
                 self._review_url, auth=self._auth,
                 json={"action": action, "products": products}, timeout=(5, 60),
             )
@@ -143,7 +183,7 @@ class CatalogApi:
             if product.isbn in approved_exceptions:
                 payload["exceptions_confirmed"] = True
             payloads.append(payload)
-        response = requests.post(
+        response = self._request('POST',
             self._create_product_url,
             json={"products": payloads},
             auth=self._auth,
@@ -169,7 +209,7 @@ class CatalogApi:
         return {"created": created, "duplicates": duplicates}
 
     def list_inventory_products(self) -> list[dict[str, object]]:
-        response = requests.get(
+        response = self._request('GET',
             self._inventory_products_url,
             auth=self._auth,
             timeout=(5, 60),
@@ -194,9 +234,100 @@ class CatalogApi:
 
         return products
 
+    @staticmethod
+    def _valid_store_product(product):
+        return (isinstance(product, dict) and type(product.get('woocommerce_id')) is int
+                and product['woocommerce_id'] > 0 and product.get('review_status') == 'in_store'
+                and isinstance(product.get('_store_revision'), str)
+                and re.fullmatch('[0-9a-f]{64}', product['_store_revision']) is not None)
+
+    def list_store_products(self, *, progress=None):
+        started = perf_counter()
+
+        def read_page(page):
+            response = self._request('GET', self._store_review_url, params={'page': page}, auth=self._auth, timeout=(5, 60))
+            self._check_response(response, 'store_review.php')
+            body = response.json()
+            if (not isinstance(body, dict) or type(body.get('page')) is not int or body['page'] != page
+                    or type(body.get('pages')) is not int or not 0 <= body['pages'] <= 10000
+                    or type(body.get('total')) is not int or body['total'] < 0
+                    or not isinstance(body.get('products'), list)):
+                raise ValueError('La API no devolvió una página válida de WooCommerce.')
+            return body
+
+        first = read_page(1)
+        pages = {1: first}
+        if progress:
+            progress(len(first['products']), first['total'])
+        if first['pages'] > 1:
+            with ThreadPoolExecutor(max_workers=self.STORE_PAGE_WORKERS) as executor:
+                jobs = {executor.submit(read_page, page): page for page in range(2, first['pages'] + 1)}
+                completed = len(first['products'])
+                try:
+                    for job in as_completed(jobs):
+                        body = job.result()
+                        if body['total'] != first['total'] or body['pages'] != first['pages']:
+                            raise ValueError('El catálogo cambió durante la lectura. Recarga para obtener una lista completa.')
+                        pages[body['page']] = body
+                        completed += len(body['products'])
+                        if progress:
+                            progress(completed, first['total'])
+                except Exception:
+                    for job in jobs:
+                        job.cancel()
+                    raise
+        products, seen = [], set()
+        for page in sorted(pages):
+            body = pages[page]
+            for product in body['products']:
+                if not self._valid_store_product(product) or product['woocommerce_id'] in seen:
+                    raise ValueError('El listado de WooCommerce cambió o contiene fichas inesperadas. Recarga para comprobarlo.')
+                seen.add(product['woocommerce_id'])
+                products.append(product)
+            if not body['products'] and first['total']:
+                raise ValueError('El listado de WooCommerce quedó incompleto. Recarga para comprobarlo.')
+        if len(products) != first['total']:
+            raise ValueError('El listado de WooCommerce quedó incompleto. Se conserva el listado anterior; recarga para comprobarlo.')
+        logger.info('store.loaded products=%s pages=%s elapsed=%.2fs', len(products), len(pages), perf_counter() - started)
+        return products
+
+    def update_store_products(self, entries):
+        if not entries or len(entries) > 100:
+            raise ValueError('Selecciona entre 1 y 100 fichas por envío a la tienda.')
+        for entry in entries:
+            logger.info('store.update_requested id=%s fields=%s', entry['id'], sorted(entry.get('changes', {})))
+        try:
+            response = self._request('POST', self._store_review_url, auth=self._auth,
+                                     json={'products': entries}, timeout=(5, 120))
+        except requests.exceptions.RequestException as error:
+            raise ValueError('Conexión interrumpida con WooCommerce. Las propuestas se conservan; '
+                             'recarga para comprobar qué se guardó antes de reintentar.') from error
+        self._check_response(response, 'store_review.php')
+        body = response.json()
+        expected = {entry['id'] for entry in entries}
+        if (len(expected) != len(entries) or not isinstance(body, dict)
+                or not isinstance(body.get('saved'), list) or not isinstance(body.get('failed'), list)):
+            raise ValueError('No se pudo confirmar la actualización en tienda. Recarga antes de reintentar.')
+        seen = set()
+        for saved in body['saved']:
+            if (not isinstance(saved, dict) or type(saved.get('id')) is not int or saved['id'] not in expected
+                    or saved['id'] in seen or not self._valid_store_product(saved.get('product'))
+                    or saved['product']['woocommerce_id'] != saved['id']):
+                raise ValueError('Respuesta de actualización inesperada. Recarga la tienda para comprobarla.')
+            seen.add(saved['id'])
+        for failed in body['failed']:
+            if (not isinstance(failed, dict) or type(failed.get('id')) is not int
+                    or failed['id'] not in expected or failed['id'] in seen
+                    or not isinstance(failed.get('message'), str) or type(failed.get('status_code')) is not int):
+                raise ValueError('Respuesta de actualización incompleta. Recarga la tienda para comprobarla.')
+            seen.add(failed['id'])
+        if seen != expected:
+            raise ValueError('Faltan resultados de WooCommerce. Recarga antes de reintentar.')
+        return body
+
     def sync_store(self) -> dict[str, object]:
         try:
-            response = requests.post(
+            response = self._request('POST',
                 self._sync_store_url,
                 json={"action": "sync"},
                 auth=self._auth,
@@ -217,12 +348,16 @@ class CatalogApi:
                 "Respuesta inesperada. Recarga las fichas para comprobar el resultado."
             ) from error
 
+        if isinstance(result, dict) and result.get('sync_version') != 2:
+            raise ValueError('Actualiza sync_store.php y sus archivos de apoyo a Yumekai 0.2.0 para sincronizar las copias.')
+
         counters = (
             "store_isbns",
             "linked",
             "already_linked",
             "not_in_importer",
             "invalid_store_isbns",
+            "conflicting_store_isbns",
         )
 
         if (
@@ -233,12 +368,25 @@ class CatalogApi:
             )
             or result["linked"]
             + result["already_linked"]
-            + result["not_in_importer"] != result["store_isbns"]
+            + result["not_in_importer"] + result['conflicting_store_isbns'] != result["store_isbns"]
             or not isinstance(result.get("products"), list)
             or len(result["products"]) != result["linked"]
         ):
             raise ValueError(
                 "Respuesta incompleta. Recarga las fichas para comprobar el resultado."
             )
-
+        for field in ('updated', 'unchanged', 'missing', 'unpublished', 'conflicts', 'conflicting_store_isbns'):
+            if type(result.get(field)) is not int or result[field] < 0:
+                raise ValueError('La sincronización devolvió un recuento incompleto. Recarga antes de reintentar.')
+        issues = result.get('issues')
+        if not isinstance(issues, list) or any(not isinstance(issue, dict)
+                or not isinstance(issue.get('isbn'), str) or type(issue.get('woocommerce_id')) is not int
+                or not isinstance(issue.get('status'), str) or not isinstance(issue.get('message'), str)
+                for issue in issues):
+            raise ValueError('El resultado de sincronización está incompleto. Recarga antes de reintentar.')
+        logger.info('store.sync_result counts=%s', {key: value for key, value in result.items()
+                    if type(value) is int})
+        for issue in issues:
+            logger.warning('store.sync_issue id=%s isbn=%s status=%s message=%s', issue['woocommerce_id'],
+                           issue['isbn'], issue['status'], issue['message'])
         return result

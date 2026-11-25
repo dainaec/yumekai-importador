@@ -245,7 +245,10 @@ class RecheckUiTests(unittest.TestCase):
         self.assertEqual(self.window._current_product(ISBN)['pages'], 200)
         self.assertIn(ISBN, self.window._drafts)
         self.assertIn('Guardar cambios pendientes', self.window._feedback.text())
-        self.window._retry_drafts(); self.wait_finished()
+        with patch('yumekai_importer.ui.windows.pending_review_window.review_changes',
+                   side_effect=lambda rows, **kwargs: {key: row['changes'] for key, row in rows.items()}):
+            self.window._retry_drafts()
+        self.wait_finished()
         self.assertEqual(self.api.rows[ISBN]['pages'], 200)
         self.assertTrue(self.window._sd_results[ISBN]['saved'])
         self.assertEqual(self.api.rows[ISBN]['review_status'], 'pending_review')

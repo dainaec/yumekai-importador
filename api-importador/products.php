@@ -24,6 +24,7 @@ try {
     $statement->execute(['status' => $status]);
     review_response(200, array_map('review_row', $statement->fetchAll(PDO::FETCH_ASSOC)));
 } catch (Throwable $error) {
+    yumekai_log('request.failed', ['type' => get_class($error), 'message' => $error->getMessage()]);
     error_log('Yumekai review list: ' . $error->getCode());
     review_response(500, ['message' => 'No se pudieron cargar las fichas del importador.']);
 }

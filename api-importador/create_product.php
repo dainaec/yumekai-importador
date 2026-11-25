@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . "/event_log.php";
 
 ini_set('display_errors', '0');
 
@@ -8,6 +9,7 @@ require_once __DIR__ . '/exception_rules.php';
 
 function send_json(int $status, array $body): void
 {
+    yumekai_response_event($status, $body);
     http_response_code($status);
     echo json_encode($body, JSON_UNESCAPED_UNICODE);
     exit;
@@ -158,6 +160,7 @@ try {
 
     send_json(201, ['isbn' => $rows[0]['isbn']]);
 } catch (Throwable $error) {
+    yumekai_log('request.failed', ['type' => get_class($error), 'message' => $error->getMessage()]);
     if (isset($pdo) && $pdo->inTransaction()) {
         $pdo->rollBack();
     }

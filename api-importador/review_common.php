@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+require_once __DIR__ . '/event_log.php';
 require_once __DIR__ . '/exception_rules.php';
 
 const REVIEW_COLUMNS = 'isbn, title, retail_price, sale_price, author, description, categories,
@@ -17,6 +18,7 @@ class ReviewRequestError extends RuntimeException {}
 
 function review_response(int $status, array $body): void
 {
+    yumekai_response_event($status, $body);
     http_response_code($status);
     echo json_encode($body, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
     exit;

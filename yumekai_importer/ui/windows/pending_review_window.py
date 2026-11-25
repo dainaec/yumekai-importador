@@ -12,6 +12,10 @@ from yumekai_importer.catalog.review_fields import review_categories, sale_price
 from yumekai_importer.catalog.exception_rules import required_issues, ready_exception_issues
 from yumekai_importer.ui.widgets.exception_approval_dialog import confirm_exceptions
 from yumekai_importer.catalog.sd_review import sd_review_changes
+from yumekai_importer.catalog.suppliers import supplier_block_reason
+from yumekai_importer.catalog.change_selection import confirm_change_selection
+from yumekai_importer.diagnostics import logger
+from yumekai_importer.ui.widgets.diagnostics_menu import add_diagnostics_actions
 from yumekai_importer.catalog.classification import canonical_demographic
 from yumekai_importer.catalog.duplicate_titles import find_duplicate_titles
 from yumekai_importer.catalog.review_filters import matches_review_filters
@@ -28,6 +32,7 @@ from yumekai_importer.ui.widgets.export_review_dialog import ExportReviewDialog
 from yumekai_importer.ui.widgets.review_filters_panel import ReviewFiltersPanel
 from yumekai_importer.ui.widgets.duplicate_titles_dialog import DuplicateTitlesDialog
 from yumekai_importer.ui.widgets.title_review_dialog import TitleReviewDialog
+from yumekai_importer.ui.widgets.change_review_dialog import review_changes
 from yumekai_importer.ui.widgets.review_check_delegate import ReviewCheckDelegate
 from yumekai_importer.ui.widgets.tables import make_table, set_rows
 from yumekai_importer.ui.workers.load_pending_worker import LoadPendingWorker
@@ -60,7 +65,7 @@ def _cell_text(product, field):
     if field == "demographic":
         return canonical_demographic(value) or "Por completar"
     if field == "sku" and not value:
-        return "Se genera al pasar a lista"
+        return "Sin SKU" if product.get('review_status') == 'in_store' else "Se genera al pasar a lista"
     if field == "categories":
         return ", ".join(map(str, value)) if isinstance(value, (list, tuple)) and value else "Por completar"
     if value is None or value == "":
@@ -108,6 +113,7 @@ class PendingReviewWindow(QWidget):
         tools_menu.addAction(self._title_button)
         tools_menu.addSeparator()
         tools_menu.addAction(self._refresh_button)
+        add_diagnostics_actions(tools_menu, self)
         self._supplier_button = QPushButton("Recomprobar")
         self._supplier_button.setObjectName("reviewMenuButton")
         self._supplier_button.setToolTip("Consultar stock y completar datos por distribuidor")
@@ -115,7 +121,7 @@ class PendingReviewWindow(QWidget):
         self._supplier_button.setMenu(supplier_menu)
         self._supplier_menus = {}
         for code, label in (("sd", "SD Distribuciones"), ("norma", "Norma Editorial"),
-                            ("milky_way", "Milky Way"), ("dirac", "DIRAC / Kibook")):
+                            ("milky_way", "Milky Way"), ("planeta", "Planeta")):
             menu = supplier_menu.addMenu(label)
             self._supplier_menus[code] = menu
             if code != "sd":
@@ -124,10 +130,13 @@ class PendingReviewWindow(QWidget):
                 menu.menuAction().setEnabled(False)
         self._sd_button = QAction("Recomprobar selección (0)", self)
         self._sd_button.setToolTip("Marca una o más fichas para consultar de nuevo sus datos en SD.")
-        self._sd_button.triggered.connect(self._recheck_sd)
+        self._sd_button.triggered.connect(lambda _checked=False: self._recheck_sd())
+        self._sd_stock_button = QAction("Solo disponibilidad", self)
+        self._sd_stock_button.triggered.connect(lambda _checked=False: self._recheck_sd(stock_only=True))
         self._sd_report_button = QAction("Ver último resultado SD", self)
         self._sd_report_button.triggered.connect(self._show_sd_report)
         self._supplier_menus["sd"].addAction(self._sd_button)
+        self._supplier_menus["sd"].addAction(self._sd_stock_button)
         self._supplier_menus["sd"].addAction(self._sd_report_button)
         self._stop_sd_button = QPushButton("Detener consulta")
         self._stop_sd_button.setObjectName("clearButton")
@@ -309,6 +318,8 @@ class PendingReviewWindow(QWidget):
             self._load_pending()
 
     def _set_feedback(self, message, kind="info"):
+        if message:
+            logger.log(40 if kind == "error" else 20, "pending.feedback %s", message)
         styles = {
             "info": (
                 "#EFF6FF", "#24538C", "#C7DCF5", "ⓘ"
@@ -519,6 +530,7 @@ class PendingReviewWindow(QWidget):
         isbn = item.data(Qt.ItemDataRole.UserRole)
         if isbn is None:
             return
+        logger.info("pending.mark isbn=%s selected=%s", isbn, item.checkState() == Qt.CheckState.Checked)
         if item.checkState() == Qt.CheckState.Checked:
             self._selected.add(isbn)
         else:
@@ -532,10 +544,13 @@ class PendingReviewWindow(QWidget):
         else:
             self._selected.update(keys)
         self._fill_tables()
+        logger.info("pending.mark_visible selected=%s", len(self._selected))
 
     def _update_actions(self):
         pending = self._status == "pending_review"
         count = len(self._selected)
+        supplier_products = {key: self._current_product(key) for key in self._selected}
+        sd_blocked = supplier_block_reason(supplier_products, "sd")
         visible = self._visible_keys()
         self._summary.setText(f"{len(visible)} de {len(self._products[self._status])} fichas · {count} marcadas"
                               + (f" · {len(self._drafts)} con cambios sin guardar" if self._drafts else ""))
@@ -554,7 +569,7 @@ class PendingReviewWindow(QWidget):
         self._title_button.setEnabled(bool(count) and not self._busy)
         if self._sd_worker is None:
             self._sd_button.setText(f"Recomprobar selección ({count})")
-            self._sd_button.setEnabled(bool(count) and not self._busy)
+            self._sd_button.setEnabled(bool(count) and not self._busy and not sd_blocked)
             self._supplier_button.setText(f"Recomprobar ({count})")
         else:
             self._sd_button.setEnabled(not self._sd_worker.stop_requested.is_set())
@@ -564,6 +579,11 @@ class PendingReviewWindow(QWidget):
         self._stop_sd_button.setEnabled(self._sd_worker is not None and not self._sd_worker.stop_requested.is_set())
         self._sd_report_button.setVisible(bool(self._sd_results))
         self._sd_report_button.setEnabled(not self._busy)
+        self._sd_stock_button.setEnabled(bool(count) and not self._busy and not sd_blocked)
+        self._sd_button.setToolTip(sd_blocked or "Consultar las fichas marcadas en SD Distribuciones.")
+        self._sd_stock_button.setToolTip(sd_blocked or "Consultar disponibilidad en SD Distribuciones.")
+        self._supplier_menus["sd"].setToolTipsVisible(True)
+        self._supplier_button.setToolTip(sd_blocked or "Consultar las fichas marcadas por distribuidor.")
         self._export_button.setText(f"Generar CSV ({count or len(visible)})")
         for button in (self._ready_button, self._return_button, self._delete_button):
             button.setEnabled(bool(count) and not self._busy)
@@ -601,6 +621,7 @@ class PendingReviewWindow(QWidget):
         if api is None:
             return
         self._worker = LoadPendingWorker(api, self)
+        self._worker.discard_drafts = bool(self._drafts)
         self._worker.finished.connect(self._finish_load)
         self._update_actions()
         self._set_feedback("Cargando fichas…")
@@ -617,6 +638,7 @@ class PendingReviewWindow(QWidget):
             self._drafts.clear()
             self._sd_results.clear()
             self._selected.clear()
+            self._checkpoint_drafts(clear_when_empty=getattr(worker, 'discard_drafts', False))
             self._loaded = True
             self._update_filter_options()
             self._fill_tables()
@@ -682,8 +704,67 @@ class PendingReviewWindow(QWidget):
             self._duplicates_dialog = None
             dialog.deleteLater()
 
-    def _retry_drafts(self):
-        self._start_action("save", [self._entry(key) for key in self._drafts])
+    def _retry_drafts(self, *, keys=None):
+        if self._busy or not self._drafts:
+            return
+
+        scope = set(self._drafts if keys is None else keys)
+
+        rows = {
+            key: {
+                "product": next(
+                    products[key]
+                    for products in self._products.values()
+                    if key in products
+                ),
+                "changes": dict(draft.get("changes", {})),
+            }
+            for key, draft in self._drafts.items()
+            if key in scope and draft.get("changes")
+        }
+
+        discarded = 0
+
+        if rows:
+            selected = review_changes(rows, parent=self)
+
+            # Cancelar conserva todas las propuestas.
+            if selected is None:
+                return
+
+            discarded = confirm_change_selection(self._drafts, rows, selected, self._selected)
+            for key in rows:
+                kept = self._drafts.get(key, {}).get("changes", {})
+                record = self._sd_results.get(key)
+                if record and not record.get("saved"):
+                    record["changed"] = bool(kept)
+
+                    if not kept:
+                        record["result"] = "Propuestas descartadas"
+                        record["note"] = (
+                            "Propuestas descartadas. "
+                            + record.get("note", "")
+                        )
+
+            self._checkpoint_drafts(clear_when_empty=True)
+            self._update_filter_options()
+            self._fill_tables()
+
+        remaining = scope & self._drafts.keys()
+        if not remaining:
+            self._set_feedback(
+                f"{discarded} cambio(s) descartados. "
+                "Se conservan los valores anteriores.",
+                kind="info",
+            )
+            return
+
+        entries = [
+            self._entry(key)
+            for key in sorted(remaining)
+        ]
+
+        self._start_action("save", entries)
 
     def _review_titles(self):
         if self._busy or not self._selected:
@@ -703,9 +784,11 @@ class PendingReviewWindow(QWidget):
         self._checkpoint_drafts()
         self._fill_tables()
         self._set_feedback(f"Colección/tomo: cambios propuestos en {len(proposals)} ficha(s). "
-                           "Pulsa «Guardar cambios pendientes» para guardarlos.")
+                           "Revisa los campos que quieres guardar.")
+        if proposals:
+            self._retry_drafts(keys=proposals)
 
-    def _recheck_sd(self):
+    def _recheck_sd(self, *, stock_only=False):
         if self._sd_worker is not None:
             self._sd_worker.stop_requested.set()
             self._sd_button.setText("Deteniendo SD…")
@@ -715,12 +798,17 @@ class PendingReviewWindow(QWidget):
         if self._busy or not self._selected:
             return
         products = {key: self._current_product(key) for key in sorted(self._selected)}
+        blocked = supplier_block_reason(products, "sd")
+        if blocked:
+            self._set_feedback(blocked, kind="error")
+            return
         self._sd_results.clear()
-        self._sd_worker = SdRecheckWorker(products, self)
+        self._sd_worker = SdRecheckWorker(products, self, stock_only=stock_only)
         self._sd_worker.progress.connect(self._sd_progress)
         self._sd_worker.finished.connect(self._finish_sd_recheck)
         self._sd_button.setText(f"Detener SD (0/{len(products)})")
-        self._set_feedback("Buscando por ISBN en SD. Se completarán campos vacíos y se actualizará el formato según SD. "
+        self._set_feedback(("Consultando solo disponibilidad SD. " if stock_only else
+                            "Buscando por ISBN en SD. Se completarán datos y se normalizarán formato y sinopsis. ") +
                            "Los cambios quedarán para revisar y guardar.")
         self._update_actions()
         self._sd_worker.start()
@@ -741,7 +829,7 @@ class PendingReviewWindow(QWidget):
         labels = {"found": "Encontrado", "not_found": "No encontrado", "error": "Error", "cancelled": "Sin consultar / detenida"}
         for key, result in worker.results.items():
             product = worker.products[key]
-            changes, note = sd_review_changes(product, result)
+            changes, note = sd_review_changes(product, result, stock_only=getattr(worker, 'stock_only', False))
             if result.status == "found":
                 found += 1
             elif result.status == "not_found":
@@ -761,16 +849,41 @@ class PendingReviewWindow(QWidget):
         self._checkpoint_drafts()
         self._update_filter_options()
         self._fill_tables()
-        message = (f"SD: {found} encontradas · {missing} no encontradas · {errors} con error · {cancelled} sin completar.\n"
-                   f"Cambios propuestos en {changed} ficha(s). ")
+        message = (
+            f"SD: {found} encontradas · "
+            f"{missing} no encontradas · "
+            f"{errors} con error · "
+            f"{cancelled} sin completar.\n"
+            f"Cambios propuestos en {changed} ficha(s). "
+        )
+
         if changed:
-            message += "Revísalos en la tabla y pulsa «Guardar cambios pendientes» para guardarlos. "
-        message += "Pulsa «Ver resultado SD» para consultar el motivo de cada ficha."
+            message += (
+                "Se abrirá «Revisar cambios» "
+                "para elegir qué guardar. "
+            )
+        else:
+            message += "No hay cambios nuevos que revisar. "
+
+        message += (
+            "En «Recomprobar → SD Distribuciones → "
+            "Ver último resultado SD» puedes consultar "
+            "el resultado de cada ficha."
+        )
+
         if worker.error:
-            message += "\n" + worker.error
-        self._set_feedback(message, kind="error" if errors or worker.error else "info")
+            message += "\n" + str(worker.error)
+
+        self._set_feedback(
+            message,
+            kind="error" if errors or worker.error else "info",
+        )
+
         worker.deleteLater()
         self._update_actions()
+
+        if changed:
+            self._retry_drafts(keys=[key for key, record in self._sd_results.items() if record.get("changed")])
 
     def _show_sd_report(self):
         if not self._sd_results:
@@ -800,6 +913,9 @@ class PendingReviewWindow(QWidget):
         dialog.deleteLater()
 
     def _mark_ready(self):
+        if self._selected & self._drafts.keys():
+            self._retry_drafts(keys=self._selected)
+            return
         if not self._selected:
             return
         self._start_action("ready", [self._entry(key) for key in sorted(self._selected)])
@@ -860,7 +976,8 @@ class PendingReviewWindow(QWidget):
             key = entry["original_isbn"]
             ready = action == "ready" or (action == "save" and entry.get("ready_to_upload"))
             if ready:
-                product = {**self._current_product(key), **entry.get("changes", {})}
+                stored = next(rows[key] for rows in self._products.values() if key in rows)
+                product = {**stored, **entry.get("changes", {})}
                 mandatory = required_issues(product)
                 if mandatory:
                     failed.append({"original_isbn": key, "message": " · ".join(mandatory)})
@@ -891,6 +1008,16 @@ class PendingReviewWindow(QWidget):
         result = worker.result or {}
         originals = (result.get("deleted", []) if worker.action == "delete" else
                      [entry["original_isbn"] for entry in result.get("saved", [])])
+        requests = {entry['original_isbn']: entry for entry in worker.products}
+        remaining = {}
+        if worker.action == 'save':
+            for original in originals:
+                draft = self._drafts.get(original)
+                if draft:
+                    rest = {field: value for field, value in draft['changes'].items()
+                            if field not in requests[original].get('changes', {})}
+                    if rest:
+                        remaining[original] = {**draft, 'changes': rest}
         for original in originals:
             for rows in self._products.values():
                 rows.pop(original, None)
@@ -901,6 +1028,8 @@ class PendingReviewWindow(QWidget):
                 product = entry["product"]
                 self._products[product["review_status"]][str(product["isbn"])] = product
                 original = entry["original_isbn"]
+                if original in remaining:
+                    self._drafts[str(product['isbn'])] = remaining[original]
                 if original in self._sd_results and self._sd_results[original].get("changed"):
                     record = self._sd_results.pop(original)
                     record["saved"] = True
@@ -975,12 +1104,21 @@ class PendingReviewWindow(QWidget):
 
     def can_leave(self):
         if self._busy:
-            self._set_feedback("Espera a que termine la operación para salir de esta pantalla.")
+            self._set_feedback(
+                "Espera a que termine la operación "
+                "para salir de esta pantalla."
+            )
             return False
+
         if not self._confirm_discard():
             return False
+
+        had_drafts = bool(self._drafts)
         self._drafts.clear()
+        self._selected.clear()
+        self._checkpoint_drafts(clear_when_empty=had_drafts)
         self._fill_tables()
+
         return True
 
     def closeEvent(self, event: QCloseEvent):

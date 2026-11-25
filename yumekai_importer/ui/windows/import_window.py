@@ -1,3 +1,4 @@
+from yumekai_importer.diagnostics import logger
 from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
@@ -15,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from yumekai_importer.catalog.product import Product, YumekaiStatus
+from yumekai_importer.catalog.product import YumekaiStatus
 from yumekai_importer.catalog.exception_rules import import_exception_issues
 from yumekai_importer.ui.widgets.exception_approval_dialog import confirm_exceptions
 
@@ -23,13 +24,11 @@ from yumekai_importer.importers.import_result import ImportResult
 from yumekai_importer.importers.issues_excel import export_import_issues
 from yumekai_importer.importers.norma.excel import read_norma_excel
 from yumekai_importer.importers.sd.excel import read_sd_excel
-from yumekai_importer.importers.sd.details import apply_sd_details, needs_sd_details
 
 from yumekai_importer.storage.catalog_api import CatalogApi
 from yumekai_importer.storage.credentials import load_credentials
 
 from yumekai_importer.ui.workers.save_import_worker import SaveImportWorker
-from yumekai_importer.ui.workers.sd_stock_worker import SdStockWorker
 from yumekai_importer.ui.widgets.tables import make_table, set_rows
 
 
@@ -109,13 +108,6 @@ class ImportWindow(QWidget):
         actions.addWidget(norma_button)
         actions.addStretch()
 
-        self._stock_worker: SdStockWorker | None = None
-        self.stock_button = QPushButton("Comprobar stock y fichas SD")
-        self.stock_button.setObjectName("stockButton")
-        self.stock_button.setEnabled(False)
-        self.stock_button.clicked.connect(self._check_sd_stock)
-        actions.addWidget(self.stock_button)
-
         self._file_buttons = (sd_button, norma_button, clear_button)
         self.save_button = QPushButton("Guardar carga")
         self.save_button.setEnabled(False)
@@ -125,7 +117,7 @@ class ImportWindow(QWidget):
         actions.addWidget(clear_button)
         layout.addLayout(actions)
 
-        self.summary = QLabel("Selecciona un Excel para empezar.")
+        self.summary = QLabel("Carga el Excel y guarda las fichas. La consulta SD se realiza desde Revisar.")
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setObjectName("importSummary")
         layout.addWidget(self.summary)
@@ -174,6 +166,7 @@ class ImportWindow(QWidget):
         try:
             result = reader(path)
         except Exception as error:
+            logger.exception("import.failed")
             QMessageBox.warning(self, "No se pudo leer el Excel", str(error))
             return
 
@@ -181,6 +174,7 @@ class ImportWindow(QWidget):
             self._show_result(result, Path(path).name)
 
     def _show_result(self, result: ImportResult, filename: str) -> None:
+        logger.info("import.loaded source=%s products=%s issues=%s", filename, len(result.products), len(result.issues))
         self._result = result
         self._source_filename = filename
         self._issues_exported = not bool(result.issues)
@@ -200,7 +194,6 @@ class ImportWindow(QWidget):
 
         self.save_button.setEnabled(bool(result.products))
 
-        self.stock_button.setEnabled(bool(self._sd_to_check()))
 
     def _export_issues(self) -> bool:
         if not self._result.issues:
@@ -215,7 +208,9 @@ class ImportWindow(QWidget):
             path += ".xlsx"
         try:
             count = export_import_issues(self._result, path)
+            logger.info("import.issues_exported count=%s file=%s", count, Path(path).name)
         except Exception as error:
+            logger.exception("import.failed")
             QMessageBox.warning(self, "No se pudieron exportar las incidencias", str(error))
             return False
         self._issues_exported = True
@@ -281,16 +276,16 @@ class ImportWindow(QWidget):
         self.products_table.fit_title_rows()
         
     def _clear(self) -> None:
+        logger.info("import.clear products=%s", len(self._result.products))
         if not self._confirm_leave_issues():
             return
         self._result = ImportResult()
         self._issues_exported = True
         self.export_issues_button.setEnabled(False)
         self.save_button.setEnabled(False)
-        self.stock_button.setEnabled(False)
         self.products_table.setRowCount(0)
         self.issues_table.setRowCount(0)
-        self.summary.setText("Selecciona un Excel para empezar.")
+        self.summary.setText("Carga el Excel y guarda las fichas. La consulta SD se realiza desde Revisar.")
 
     def _save_to_hostalia(self) -> None:
         if not self._result.products or self._save_worker is not None:
@@ -312,6 +307,7 @@ class ImportWindow(QWidget):
         try:
             credentials = load_credentials()
         except Exception as error:
+            logger.exception("import.failed")
             QMessageBox.warning(self, "Acceso a Hostalia", str(error))
             return
 
@@ -332,98 +328,11 @@ class ImportWindow(QWidget):
         for button in self._file_buttons:
             button.setEnabled(not busy)
         self.save_button.setEnabled(not busy and bool(self._result.products))
-        self.stock_button.setEnabled(not busy and bool(self._sd_to_check()))
         self.export_issues_button.setEnabled(not busy and bool(self._result.issues))
 
     def _set_saving(self, saving: bool) -> None:
         self._set_busy(saving)
         self.save_button.setText("Guardando…" if saving else "Guardar carga")
-
-    def _sd_to_check(self) -> list[Product]:
-        return [
-            product for product in self._result.products
-            if product.isbn in self._result.sd_references
-        ]
-
-    def _check_sd_stock(self) -> None:
-        if self._stock_worker is not None:
-            self._stock_worker.stop_requested.set()
-            self.stock_button.setText("Deteniendo SD…")
-            self.stock_button.setEnabled(False)
-            return
-
-        products = self._sd_to_check()
-        if not products:
-            return
-
-        references = {p.isbn: self._result.sd_references[p.isbn] for p in products}
-        detail_isbns = {p.isbn for p in products if needs_sd_details(p)}
-        self._stock_worker = SdStockWorker(references, self, detail_isbns=detail_isbns)
-        self._stock_worker.stock_progress.connect(self._show_sd_stock_progress)
-        self._stock_worker.detail_progress.connect(self._show_sd_detail_progress)
-        self._stock_worker.finished.connect(self._finish_sd_stock)
-        self.stock_button.setText("Detener consulta SD")
-        self._set_busy(True)
-        self.stock_button.setEnabled(True)
-        self._stock_worker.start()
-
-    @Slot(str, int, int, int)
-    def _show_sd_stock_progress(self, code: str, page: int, found: int, total: int) -> None:
-        worker = self._stock_worker
-        if worker is not None and not worker.stop_requested.is_set():
-            self.stock_button.setText(f"Detener SD · {code}: {found}/{total} · pág. {page}")
-
-    @Slot(int, int)
-    def _show_sd_detail_progress(self, index: int, total: int) -> None:
-        worker = self._stock_worker
-        if worker is not None and not worker.stop_requested.is_set():
-            self.stock_button.setText(f"Detener fichas ({index}/{total})")
-            self.stock_button.setEnabled(True)
-
-    @Slot()
-    def _finish_sd_stock(self) -> None:
-        worker = self._stock_worker
-        if worker is None:
-            return
-
-        updated = 0
-        for product in self._result.products:
-            status = worker.statuses.get(product.isbn)
-            if status is not None:
-                product.yumekai_status = YumekaiStatus(status)
-
-            details = worker.details.get(product.isbn)
-            if details is not None and apply_sd_details(product, details):
-                updated += 1
-
-        affected = {id(self._result.products_by_row[i.row]) for i in self._result.issues
-                    if i.row in self._result.products_by_row}
-        if any(id(p) in affected and (p.isbn in worker.details or p.isbn in worker.statuses)
-               for p in self._result.products):
-            self._issues_exported = False
-
-        self._show_products()
-        message = (
-            f"Estado SD confirmado para {len(worker.statuses)} códigos.\n"
-            f"Datos añadidos a {updated} fichas."
-        )
-        unconfirmed = len(worker.requested_isbns - worker.statuses.keys())
-        if unconfirmed:
-            message += (f"\n{unconfirmed} códigos con estado sin confirmar en SD."
-                        " No encontrados, con error o con disponibilidad por consultar sin fecha válida."
-                        " Puedes marcarlos y recomprobarlos por ISBN en Revisar pendientes.")
-        error = worker.error
-        if worker.stop_requested.is_set():
-            message += "\nConsulta detenida. Se conservan los resultados obtenidos."
-        self._stock_worker = None
-        self.stock_button.setText("Comprobar stock y fichas SD")
-        self._set_busy(False)
-        worker.deleteLater()
-
-        if error is not None:
-            QMessageBox.warning(self, "Consulta SD", f"{message}\n\n{error}")
-        else:
-            QMessageBox.information(self, "Consulta SD", message)
 
     @Slot()
     def _finish_save(self) -> None:
@@ -438,12 +347,15 @@ class ImportWindow(QWidget):
         self._set_saving(False)
 
         if counts is None:
+            logger.error("import.save_failed %s", error or "Sin respuesta")
             QMessageBox.warning(
                 self, "No se pudo confirmar la carga", error or "No se recibió el resultado."
             )
             return
 
         issue_note = ""
+        logger.info("import.saved created=%s duplicates=%s exceptions_skipped=%s", counts['created'],
+                    counts['duplicates'], worker.skipped_exceptions)
         if self._result.issues:
             issue_rows = {issue.row for issue in self._result.issues}
             rejected = len(issue_rows - self._result.products_by_row.keys())
@@ -461,10 +373,6 @@ class ImportWindow(QWidget):
         )
 
     def closeEvent(self, event) -> None:
-        if self._stock_worker is not None:
-            event.ignore()
-            return
-        
         if self._save_worker is not None:
             event.ignore()
         else:

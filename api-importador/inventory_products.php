@@ -36,6 +36,7 @@ try {
 
     review_response(200, $products);
 } catch (Throwable $error) {
+    yumekai_log('request.failed', ['type' => get_class($error), 'message' => $error->getMessage()]);
     error_log('Yumekai inventory: ' . $error->getMessage());
 
     review_response(500, [

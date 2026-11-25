@@ -5,6 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from yumekai_importer.diagnostics import logger
 from tempfile import NamedTemporaryFile
 
 from yumekai_importer.catalog.classification import ARTBOOK_CATEGORY, canonical_demographic
@@ -187,6 +188,7 @@ def export_products(path: str | Path, products: list[dict], *, published: int = 
     if len(ids) != len(set(ids)):
         raise ValueError("Hay ID de WordPress repetidos en la selección.")
     target = Path(path)
+    logger.info("csv.export_start products=%s file=%s", len(products), target.name)
     temporary = None
     try:
         with NamedTemporaryFile(mode="w", encoding="utf-8-sig", newline="", dir=target.parent,
@@ -199,4 +201,5 @@ def export_products(path: str | Path, products: list[dict], *, published: int = 
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    logger.info("csv.exported products=%s file=%s", len(rows), target.name)
     return len(rows)

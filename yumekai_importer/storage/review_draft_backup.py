@@ -40,8 +40,12 @@ class ReviewDraftBackup:
                 raise ValueError
             for key, draft in data["drafts"].items():
                 product = data["products"].get(key)
-                if (not isinstance(product, dict) or product.get("isbn") != key
-                        or product.get("review_status") not in ("pending_review", "ready_to_upload")
+                store = (isinstance(product, dict) and product.get('review_status') == 'in_store'
+                         and str(product.get('woocommerce_id')) == key
+                         and isinstance(product.get('_store_revision'), str))
+                importer = (isinstance(product, dict) and product.get('isbn') == key
+                            and product.get('review_status') in ('pending_review', 'ready_to_upload'))
+                if (not (store or importer)
                         or not isinstance(draft, dict) or not isinstance(draft.get("changes"), dict)
                         or not isinstance(draft.get("ready_to_upload"), bool)):
                     raise ValueError

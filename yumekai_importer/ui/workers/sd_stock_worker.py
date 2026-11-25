@@ -1,3 +1,4 @@
+from yumekai_importer.diagnostics import logger
 from threading import Event
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
@@ -38,6 +39,7 @@ class SdStockWorker(QThread):
                 progress=self.stock_progress.emit,
             )
         except Exception as error:
+            logger.exception("worker.failed name=sd_stock_worker")
             self.error = str(error) or "No se pudo consultar SD."
             return
 
@@ -82,6 +84,7 @@ class SdStockWorker(QThread):
                             else:
                                 self.result.pop(isbn, None)
                     except Exception as error:
+                        logger.exception("worker.failed name=sd_stock_worker")
                         if self.result.get(isbn) is not True:
                             self.statuses.pop(isbn, None)
                         failed += 1

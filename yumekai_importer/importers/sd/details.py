@@ -38,6 +38,26 @@ def _text(page: html.HtmlElement, element_id: str) -> str | None:
     return None if value.upper() in {"", "-", "- -", "N/D"} else value
 
 
+def _description_text(page: html.HtmlElement) -> str | None:
+    # Preserve real HTML paragraph and break boundaries before extracting text.
+    from copy import deepcopy
+    node = page.get_element_by_id("txtSinpsis", None)
+    if node is None:
+        return None
+    node = deepcopy(node)
+    if any(str(element.tag).lower() not in {'p', 'div', 'br', 'span'} for element in node.iterdescendants()):
+        # Keep semantic formatting (lists, links, emphasis...) for manual review.
+        from html import escape
+        return (escape(node.text or '') + ''.join(html.tostring(child, encoding='unicode', method='html')
+                                                  for child in node)).strip() or None
+    for element in node.iterdescendants():
+        if str(element.tag).lower() == "br":
+            element.tail = "\n" + (element.tail or "")
+        elif str(element.tag).lower() in {"p", "div"}:
+            element.tail = "\n\n" + (element.tail or "")
+    return node.text_content().strip() or None
+
+
 def _main_article(page: html.HtmlElement) -> html.HtmlElement:
     article = page.get_element_by_id("dvFichaArticuloFA", None)
     return article if article is not None else page
@@ -98,7 +118,7 @@ def _parse_details(page: html.HtmlElement, isbn: str, *, checked_on=None) -> SdD
         pages=pages,
         sd_format=_text(article, "txtFormatoTapa"),
         author=_text(page, "txtAutorFA"),
-        description=_text(page, "txtSinpsis"),
+        description=_description_text(page),
         publisher=_text(page, "txtFamilia") or _text(page, "txtEditorial"),
         retail_price=price.group(1).replace(",", ".") if price else None,
         image_url=image_url,

@@ -65,7 +65,7 @@ class SdFormatTests(unittest.TestCase):
                 self.assertFalse(apply_sd_details(imported, details))
                 self.assertEqual(_product_payload(imported)['book_format'], expected)
 
-                current = product(status='ready_to_upload', book_format='Edición especial')
+                current = product(status='ready_to_upload', book_format='Edición especial', description='Sinopsis revisada')
                 changes, note = sd_review_changes(current, SdLookupResult(ISBN, 'found', details=details))
                 self.assertEqual(changes, {'book_format': expected})
                 self.assertEqual(current['book_format'], 'Edición especial')
@@ -95,7 +95,7 @@ class SdFormatTests(unittest.TestCase):
 
     def test_existing_taxonomy_format_is_replaced_without_changing_demographic(self):
         details = replace(DETAILS, sd_format='SEINEN')
-        current = product(book_format='SEINEN', demographic='Seinen')
+        current = product(book_format='SEINEN', demographic='Seinen', description='Sinopsis revisada')
         changes, _ = sd_review_changes(current, SdLookupResult(ISBN, 'found', details=details))
         self.assertEqual(changes, {'book_format': 'Rústica'})
         self.assertEqual(current['demographic'], 'Seinen')

@@ -1,3 +1,4 @@
+from yumekai_importer.diagnostics import logger
 from PySide6.QtCore import QThread
 
 from yumekai_importer.catalog.product import Product
@@ -19,4 +20,5 @@ class SaveImportWorker(QThread):
             kwargs = {"approved_exceptions": self._approved_exceptions} if self._approved_exceptions else {}
             self.result = self._api.create_products(self._products, **kwargs)
         except Exception as error:
+            logger.exception("worker.failed name=save_import_worker")
             self.error = str(error)

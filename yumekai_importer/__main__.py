@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from yumekai_importer.version import APP_NAME, APP_VERSION
+from yumekai_importer.diagnostics import configure_logging, install_exception_hooks, logger
 
 from yumekai_importer.ui.styles.theme import apply_light_theme
 from yumekai_importer.ui.styles.application_icon import configure_windows_app_id, load_application_icon
@@ -14,6 +15,12 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    try:
+        configure_logging()
+    except OSError as error:
+        print(f"No se pudo iniciar el registro de Yumekai: {error}", file=sys.stderr)
+    install_exception_hooks()
+    app.aboutToQuit.connect(lambda: logger.info("application.exit"))
     icon = load_application_icon()
     if not icon.isNull():
         app.setWindowIcon(icon)

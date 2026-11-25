@@ -1,3 +1,4 @@
+from yumekai_importer.diagnostics import logger
 from PySide6.QtCore import QThread
 from yumekai_importer.storage.review_saving import save_review_drafts
 
@@ -19,4 +20,5 @@ class ReviewActionWorker(QThread):
             else:
                 self.result = self._api.review_products(self.action, self.products)
         except Exception as error:
+            logger.exception("worker.failed name=review_action_worker")
             self.error = str(error)

@@ -55,7 +55,7 @@ class SynopsisRecoveryTests(unittest.TestCase):
         self.assertEqual(p.description, self.full)
         result = SdLookupResult(isbn=ISBN, status='found', url=URL, available=True, details=self.details)
         changes, note = sd_review_changes(product(ISBN, description=self.short), result)
-        self.assertEqual(changes['description'], self.full)
+        self.assertEqual(changes['description'], self.full.strip())
         self.assertIn('Sinopsis abreviada completada', note)
 
     def test_reviewed_descriptions_and_unrelated_sd_text_are_preserved(self):

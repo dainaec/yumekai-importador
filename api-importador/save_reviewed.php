@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+require_once __DIR__ . "/event_log.php";
 
 ini_set('display_errors', '0');
 
@@ -209,6 +210,7 @@ try {
     $pdo->commit();
     respond(200, ['saved' => $saved]);
 } catch (Throwable $error) {
+    yumekai_log('request.failed', ['type' => get_class($error), 'message' => $error->getMessage()]);
     if ($pdo instanceof PDO && $pdo->inTransaction()) {
         $pdo->rollBack();
     }

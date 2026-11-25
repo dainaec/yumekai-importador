@@ -1,3 +1,4 @@
+from yumekai_importer.diagnostics import logger
 from PySide6.QtCore import QObject, QThread
 
 from yumekai_importer.storage.catalog_api import CatalogApi
@@ -17,4 +18,5 @@ class LoadPendingWorker(QThread):
                 "ready_to_upload": self._api.list_products("ready_to_upload"),
             }
         except Exception as error:
+            logger.exception("worker.failed name=load_pending_worker")
             self.error = str(error)

@@ -26,6 +26,7 @@ def make_table(
     table.setHorizontalHeaderLabels(headers)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
     table.setAlternatingRowColors(True)
     table.setShowGrid(False)
     table.verticalHeader().setDefaultSectionSize(32)

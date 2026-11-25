@@ -15,6 +15,7 @@ from yumekai_importer.ui.widgets.review_filters_panel import ReviewFiltersPanel
 from yumekai_importer.ui.widgets.tables import make_table, set_rows
 from yumekai_importer.ui.windows.pending_review_window import API_URL, TABLE_COLUMNS, _cell_text
 from yumekai_importer.ui.workers.inventory_worker import InventoryWorker
+from yumekai_importer.diagnostics import logger
 
 
 # Ambas pantallas utilizan las mismas columnas, anchuras y formatos de celda.
@@ -22,6 +23,10 @@ INVENTORY_COLUMNS = TABLE_COLUMNS
 
 
 class InventoryWindow(QWidget):
+    @staticmethod
+    def _key(product):
+        return str(product['isbn'])
+
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("inventoryWindow")
@@ -149,6 +154,8 @@ class InventoryWindow(QWidget):
         self._load_inventory()
 
     def _set_feedback(self, message, *, error=False, success=False):
+        if message:
+            logger.log(40 if error else 20, "inventory.feedback %s", message)
         color = "#991B1B" if error else "#166534" if success else "#24538C"
         self._feedback.setStyleSheet(f"color: {color};")
         self._feedback.setText(message)
@@ -205,7 +212,7 @@ class InventoryWindow(QWidget):
 
     def _fill_table(self):
         products = self._visible_products()
-        self._selected.intersection_update(str(product['isbn']) for product in products)
+        self._selected.intersection_update(self._key(product) for product in products)
         rows = []
         for product in products:
             note = "; ".join(readiness_issues(product)) or "Sin avisos"
@@ -217,7 +224,7 @@ class InventoryWindow(QWidget):
         with QSignalBlocker(self._table):
             set_rows(self._table, rows)
             for row, product in enumerate(products):
-                isbn = str(product['isbn'])
+                isbn = self._key(product)
                 item = self._table.item(row, 0)
                 item.setData(Qt.ItemDataRole.UserRole, isbn)
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -231,6 +238,7 @@ class InventoryWindow(QWidget):
         isbn = item.data(Qt.ItemDataRole.UserRole)
         if isbn is None:
             return
+        logger.info("inventory.mark key=%s selected=%s", isbn, item.checkState() == Qt.CheckState.Checked)
         if item.checkState() == Qt.CheckState.Checked:
             self._selected.add(isbn)
         else:
@@ -238,24 +246,25 @@ class InventoryWindow(QWidget):
         self._update_actions()
 
     def _toggle_visible(self):
-        keys = {str(product['isbn']) for product in self._visible_products()}
+        keys = {self._key(product) for product in self._visible_products()}
         if keys and keys <= self._selected:
             self._selected.difference_update(keys)
         else:
             self._selected.update(keys)
         self._fill_table()
+        logger.info("inventory.mark_visible selected=%s", len(self._selected))
 
     def _update_actions(self):
         for widget in (self._sync_button, self._refresh_button, self._search, self._publisher_filter,
                        self._type_filter, self._clear_filters, self._more_filters, self._advanced_filters,
                        self._incomplete_button, self._table):
             widget.setEnabled(not self._busy)
-        syncing = self._busy and self._worker.sync
+        syncing = self._worker is not None and self._worker.sync
         self._sync_button.setText("Sincronizando…" if syncing else "Sincronizar con tienda")
         self._refresh_button.setText("Cargando…" if self._busy and not syncing else "Recargar")
         visible = self._visible_products()
         self._summary.setText(f"{len(visible)} de {len(self._products)} fichas · {len(self._selected)} marcadas")
-        visible_keys = {str(product['isbn']) for product in visible}
+        visible_keys = {self._key(product) for product in visible}
         self._select_visible.setEnabled(bool(visible) and not self._busy)
         self._select_visible.setText("Desmarcar visibles" if visible_keys and visible_keys <= self._selected
                                     else "Marcar visibles")

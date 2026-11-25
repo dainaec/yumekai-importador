@@ -5,7 +5,7 @@ declare(strict_types=1);
 ini_set('display_errors', '0');
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
-require __DIR__ . '/review_common.php';
+require_once __DIR__ . '/store_mirror.php';
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     header('Allow: POST');
@@ -45,87 +45,52 @@ try {
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
 
-    global $wpdb;
-    $wpdb->suppress_errors(true);
-    $storeProducts = $wpdb->get_results(
-        "SELECT p.ID AS woocommerce_id, TRIM(m.meta_value) AS isbn
-         FROM `{$wpdb->posts}` AS p
-         INNER JOIN `{$wpdb->postmeta}` AS m
-             ON m.post_id = p.ID AND m.meta_key = '_yk_isbn'
-         WHERE p.post_type = 'product'
-           AND p.post_status = 'publish'
-           AND TRIM(m.meta_value) <> ''
-         ORDER BY p.ID",
-        ARRAY_A
-    );
-    if ($wpdb->last_error !== '' || !is_array($storeProducts)) {
-        throw new RuntimeException('No se pudo consultar el catálogo de la tienda.');
+    if (!function_exists('wc_get_product')) {
+        throw new ReviewRequestError('WooCommerce no está disponible.', 503);
     }
-
-    // Preparar un mapa ISBN -> ID y comprobar que las coincidencias son claras.
-    $catalog = [];
-    $isbnById = [];
-    $invalid = 0;
-    foreach ($storeProducts as $product) {
-        $isbn = trim((string) $product['isbn']);
-        $compact = preg_replace('/[\s-]+/u', '', $isbn);
-        if (is_string($compact) && preg_match('/\A[0-9]{13}\z/', $compact)) {
-            $isbn = $compact;
-        }
-        $id = (int) $product['woocommerce_id'];
-        if (!product_code_valid($isbn) || $id < 1) {
-            $invalid++;
-            continue;
-        }
-        if ((isset($catalog[$isbn]) && $catalog[$isbn] !== $id)
-            || (isset($isbnById[$id]) && $isbnById[$id] !== $isbn)) {
-            throw new ReviewRequestError('Hay productos con ISBN o ID contradictorios en la tienda. Revisa sus ISBN antes de sincronizar.', 409);
-        }
-        $catalog[$isbn] = $id;
-        $isbnById[$id] = $isbn;
-    }
-    ksort($catalog, SORT_STRING);
-
-    // Guardar los vínculos en la base de datos del importador.
     $pdo = require dirname(__DIR__, 2) . '/importer-private/database.php';
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $find = $pdo->prepare('SELECT woocommerce_id FROM products WHERE isbn = :isbn FOR UPDATE');
-    $update = $pdo->prepare('UPDATE products SET woocommerce_id = :id
-        WHERE isbn = :isbn AND woocommerce_id IS NULL');
-
-    $linked = [];
-    $alreadyLinked = 0;
-    $notFound = 0;
-    $pdo->beginTransaction();
-    foreach ($catalog as $isbn => $id) {
-        $isbn = (string) $isbn;
-        $find->execute(['isbn' => $isbn]);
-        $current = $find->fetch(PDO::FETCH_ASSOC);
-        $find->closeCursor();
-        if ($current === false) {
-            $notFound++;
-            continue;
-        }
-        if ($current['woocommerce_id'] !== null) {
-            $alreadyLinked++;
-            continue;
-        }
-        $update->execute(['id' => $id, 'isbn' => $isbn]);
-        if ($update->rowCount() !== 1) {
-            throw new RuntimeException('No se pudo guardar uno de los vínculos.');
-        }
-        $linked[] = ['isbn' => $isbn, 'woocommerce_id' => $id];
+    // Read identities first; WordPress hydration happens before taking importer locks.
+    $existing = $pdo->query('SELECT woocommerce_id FROM products WHERE woocommerce_id IS NOT NULL')
+        ->fetchAll(PDO::FETCH_COLUMN);
+    $published = wc_get_products(['status' => 'publish', 'limit' => -1, 'return' => 'ids',
+        'orderby' => 'ID', 'order' => 'ASC']);
+    global $wpdb;
+    if (!is_array($published) || $wpdb->last_error !== '') {
+        throw new RuntimeException('No se pudo obtener el catálogo completo de WooCommerce.');
     }
+    $ids = array_values(array_unique(array_merge(array_map('intval', $published), array_map('intval', $existing))));
+    $snapshots = [];
+    foreach (array_chunk($ids, 100) as $batch) {
+        store_prime_products($batch);
+        foreach ($batch as $id) {
+            $product = wc_get_product($id);
+            if (!$product) {
+                $post = get_post($id);
+                if ($post && $post->post_type === 'product') {
+                    throw new ReviewRequestError('WooCommerce no pudo leer una ficha que todavía existe. No se ha sincronizado ningún dato.', 503);
+                }
+            }
+            $snapshots[$id] = $product ? store_snapshot($product) : null;
+            if ($wpdb->last_error !== '') {
+                throw new RuntimeException('No se pudo leer una ficha de WooCommerce.');
+            }
+        }
+    }
+    $pdo->beginTransaction();
+    $current = $pdo->query('SELECT ' . REVIEW_COLUMNS . ', woocommerce_id FROM products FOR UPDATE')
+        ->fetchAll(PDO::FETCH_ASSOC);
+    // A new link created while WordPress was loading requires a fresh read, never a deletion guess.
+    foreach ($current as $row) {
+        if ($row['woocommerce_id'] !== null && !array_key_exists((int) $row['woocommerce_id'], $snapshots)) {
+            throw new ReviewRequestError('Los vínculos cambiaron durante la sincronización. Vuelve a sincronizar.', 409);
+        }
+    }
+    $summary = store_reconcile($pdo, $current, $snapshots);
     $pdo->commit();
-
-    review_response(200, [
-        'store_isbns' => count($catalog),
-        'linked' => count($linked),
-        'already_linked' => $alreadyLinked,
-        'not_in_importer' => $notFound,
-        'invalid_store_isbns' => $invalid,
-        'products' => $linked,
-    ]);
+    yumekai_log('store.synchronized', array_diff_key($summary, ['products' => true, 'issues' => true]));
+    foreach ($summary['issues'] as $issue) { yumekai_log('store.sync_issue', $issue); }
+    review_response(200, $summary);
 } catch (Throwable $error) {
     while (ob_get_level() > $bufferLevel) {
         ob_end_clean();
@@ -138,6 +103,7 @@ try {
     if ($error instanceof ReviewRequestError) {
         review_response($error->getCode(), ['message' => $error->getMessage()]);
     }
+    yumekai_log('store.sync_failed', ['message' => $error->getMessage()]);
     error_log('Yumekai store sync: ' . $error->getMessage());
     review_response(500, ['message' => 'No se pudo completar la sincronización. No se guardó parcialmente el lote.']);
 }

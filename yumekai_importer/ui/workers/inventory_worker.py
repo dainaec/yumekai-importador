@@ -1,3 +1,4 @@
+from yumekai_importer.diagnostics import logger
 from PySide6.QtCore import QObject, QThread
 
 from yumekai_importer.storage.catalog_api import CatalogApi
@@ -28,4 +29,5 @@ class InventoryWorker(QThread):
             self.products = self._api.list_inventory_products()
 
         except Exception as error:
+            logger.exception("worker.failed name=inventory_worker")
             self.error = str(error)

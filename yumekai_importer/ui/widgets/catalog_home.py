@@ -73,10 +73,10 @@ class CatalogHome(QScrollArea):
         copy = (
             ("01 / INCORPORAR", "Importar catálogo", "Carga los Excel de tus distribuidores y reúne las novedades en un solo lugar.",
              "Importar Excel", False),
-            ("02 / PREPARAR", "Revisar pendientes", "Completa fichas, comprueba los datos y genera el CSV cuando lo necesites.",
+            ("02 / PREPARAR", "Revisar pendientes", "Completa las fichas del importador antes de subirlas y acepta o descarta las propuestas.",
              "Abrir revisión", True),
-            ("03 / CONSULTAR", "Inventario actual", "El espacio para consultar y gestionar los productos que ya están en la tienda.",
-             "Abrir inventario", False),
+            ("03 / ACTUALIZAR", "Productos en tienda", "Revisa el catálogo actual de WooCommerce y actualiza disponibilidad y datos desde el programa.",
+             "Revisar tienda", False),
         )
         for (_, destination), (step, title, description, action, primary) in zip(destinations, copy):
             card = QFrame()
