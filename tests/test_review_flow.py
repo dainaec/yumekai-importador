@@ -179,7 +179,7 @@ def test_initial_store_load_preserves_previous_recovery_copy(app, product, tmp_p
                 {"21": {"changes": {"description": "Anterior"}, "ready_to_upload": False}}, {})
     page = StoreReviewWindow(draft_backup=backup)
     page._worker = SimpleNamespace(products=[{**product, "review_status": "in_store"}], sync_result=None,
-                                   error=None, discard_drafts=False, deleteLater=lambda: None)
+                                   error=None, discard_drafts=False, options={}, status="publish", elapsed=1.0, deleteLater=lambda: None)
     page._finish_load_store()
     assert backup.load()["drafts"]["21"]["changes"] == {"description": "Anterior"}
 
@@ -192,3 +192,14 @@ def test_leaving_pending_without_recovering_does_not_erase_previous_copy(app, pr
     page = PendingReviewWindow(draft_backup=backup)
     assert page.can_leave()
     assert backup.exists()
+
+
+def test_store_table_keeps_shop_classification_when_draft_contains_old_type(app, product, tmp_path):
+    page, key = store({**product, 'title': 'TOWER OF GOD 01', 'work_type': 'Manhwa', 'categories': ['Manhwa']},
+                      tmp_path / 'drafts.json')
+    page._drafts[key]['changes']['work_type'] = 'Manga'
+    page._fill_table()
+    assert page._current_products()[0]['work_type'] == 'Manhwa'
+    assert page._drafts[key]['changes']['work_type'] == 'Manga'
+    column = next(index for index, (field, *_rest) in enumerate(page.columns) if field == 'work_type')
+    assert page._table.item(0, column).text() == 'Manhwa'

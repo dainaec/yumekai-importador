@@ -1,3 +1,4 @@
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from itertools import pairwise
 
 from PySide6.QtCore import QPointF, QRegularExpression, Qt
@@ -301,7 +302,7 @@ class ProductReviewDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         layout.setContentsMargins(22, 18, 22, 16)
         layout.setSpacing(12)
         layout.addWidget(self._scroll, 1)
@@ -309,6 +310,7 @@ class ProductReviewDialog(QDialog):
         footer = QHBoxLayout()
         footer.addWidget(self._ready)
         footer.addStretch()
+        style_button_box(buttons)
         footer.addWidget(buttons)
         layout.addLayout(footer)
         self.setStyleSheet(_REVIEW_STYLE)

@@ -1,4 +1,5 @@
 """Review exactly which field changes may be submitted."""
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QHeaderView, QLabel,
@@ -27,7 +28,7 @@ class ChangeReviewDialog(QDialog):
         self.accepted_changes = {}
         self._rows = rows
         self._store = store
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         message = QLabel(
             "Marca los campos que quieres guardar. "
             "Doble clic en un valor para leer el texto completo. "
@@ -41,13 +42,18 @@ class ChangeReviewDialog(QDialog):
             )
             + "Cancelar conserva todas las propuestas."
         )
+        self.message = message
+        message.setObjectName("dialogDescription")
         message.setWordWrap(True)
         layout.addWidget(message)
         count = sum(len(row['changes']) for row in rows.values())
         self.table = QTableWidget(count, 5)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.setHorizontalHeaderLabels(['Aplicar', 'Producto', 'Campo', 'Actual', 'Propuesto'])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
@@ -61,17 +67,6 @@ class ChangeReviewDialog(QDialog):
         for column in (3, 4):
             self.table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
         self.table.setItemDelegateForColumn(0, ReviewCheckDelegate(self.table))
-        self.table.setStyleSheet("""
-            QTableView::indicator {
-                width: 18px;
-                height: 18px;
-            }
-
-            QTableView::item:selected {
-                background-color: #EAD7EA;
-                color: #24212C;
-            }
-        """)
         self.table.setWordWrap(False)
         index = 0
         for key, row in rows.items():
@@ -118,6 +113,7 @@ class ChangeReviewDialog(QDialog):
         cancel.setDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        style_button_box(buttons)
         layout.addWidget(buttons)
 
     def _show_value(self, row, column):
@@ -128,7 +124,7 @@ class ChangeReviewDialog(QDialog):
         dialog.setWindowTitle(self.table.item(row, 2).text() + ' · Comparar valores completos')
         available = self.screen().availableGeometry() if self.screen() is not None else None
         dialog.resize(min(1000, available.width() - 40) if available else 900, 480)
-        layout = QVBoxLayout(dialog)
+        layout = review_dialog_layout(dialog)
         values = QHBoxLayout()
         for index in (3, 4):
             pane = QVBoxLayout()
@@ -141,6 +137,7 @@ class ChangeReviewDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.button(QDialogButtonBox.StandardButton.Close).setText('Cerrar')
         buttons.rejected.connect(dialog.reject)
+        style_button_box(buttons)
         layout.addWidget(buttons)
         dialog.exec()
         dialog.deleteLater()

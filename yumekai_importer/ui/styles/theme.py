@@ -36,3 +36,5 @@ def apply_light_theme(app) -> None:
     stylesheet = (directory / "yumekai.qss").read_text(encoding="utf-8")
     stylesheet = stylesheet.replace("@THEME_ICON_DIR@", (directory / "icons").as_posix())
     app.setStyleSheet(stylesheet)
+    from yumekai_importer.ui.widgets.presentation import install_dialog_presentation
+    install_dialog_presentation(app)

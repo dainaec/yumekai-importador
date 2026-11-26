@@ -38,6 +38,12 @@ class FrozenTitleTable(QTableWidget):
             self.verticalScrollBar().setValue
         )
 
+    def setRowHidden(self, row: int, hide: bool) -> None:
+        super().setRowHidden(row, hide)
+
+        if hasattr(self, "_frozen_view"):
+            self._frozen_view.setRowHidden(row, hide)
+
     def pin_title(self, frozen_columns: int = 1) -> None:
         self._frozen_columns = frozen_columns
         frozen = self._frozen_view

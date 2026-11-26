@@ -1,4 +1,5 @@
-from PySide6.QtCore import QSignalBlocker, Qt, Slot
+from yumekai_importer.ui.widgets.status_message import StatusMessage
+from PySide6.QtCore import QSignalBlocker, Qt, Slot, QTimer
 from PySide6.QtGui import QCloseEvent, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
@@ -12,7 +13,7 @@ from yumekai_importer.storage.catalog_api import CatalogApi
 from yumekai_importer.storage.credentials import load_credentials
 from yumekai_importer.ui.widgets.review_check_delegate import ReviewCheckDelegate
 from yumekai_importer.ui.widgets.review_filters_panel import ReviewFiltersPanel
-from yumekai_importer.ui.widgets.tables import make_table, set_rows
+from yumekai_importer.ui.widgets.tables import make_table, set_rows, filter_table_rows
 from yumekai_importer.ui.windows.pending_review_window import API_URL, TABLE_COLUMNS, _cell_text
 from yumekai_importer.ui.workers.inventory_worker import InventoryWorker
 from yumekai_importer.diagnostics import logger
@@ -23,6 +24,8 @@ INVENTORY_COLUMNS = TABLE_COLUMNS
 
 
 class InventoryWindow(QWidget):
+    columns = INVENTORY_COLUMNS
+
     @staticmethod
     def _key(product):
         return str(product['isbn'])
@@ -34,6 +37,11 @@ class InventoryWindow(QWidget):
         self._products = []
         self._selected = set()
         self._api_override = None
+        
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(200)
+        self._filter_timer.timeout.connect(self._apply_filter_rows)
 
         # Cabecera y acciones.
         title = QLabel("Inventario actual")
@@ -107,16 +115,14 @@ class InventoryWindow(QWidget):
         actions.addWidget(self._select_visible)
         actions.addStretch()
 
-        self._feedback = QLabel()
-        self._feedback.setTextFormat(Qt.TextFormat.PlainText)
-        self._feedback.setWordWrap(True)
-        self._feedback.hide()
+        self._feedback_banner = StatusMessage()
+        self._feedback = self._feedback_banner.label
 
         # Mismas casillas, título fijo y columnas que Revisar pendientes.
         self._table = make_table(
-            [label for _, label, _ in INVENTORY_COLUMNS],
+            [label for _, label, _ in self.columns],
             stretch_column=None,
-            column_widths={i: width for i, (_, _, width) in enumerate(INVENTORY_COLUMNS)},
+            column_widths={i: width for i, (_, _, width) in enumerate(self.columns)},
             freeze_title=True, frozen_columns=2,
         )
         self._table.setWordWrap(False)
@@ -132,7 +138,7 @@ class InventoryWindow(QWidget):
         layout.addWidget(summary_bar)
         layout.addLayout(actions)
         layout.addWidget(hint)
-        layout.addWidget(self._feedback)
+        layout.addWidget(self._feedback_banner)
         layout.addWidget(self._table, 1)
         self._update_filter_options()
         self._fill_table()
@@ -156,10 +162,7 @@ class InventoryWindow(QWidget):
     def _set_feedback(self, message, *, error=False, success=False):
         if message:
             logger.log(40 if error else 20, "inventory.feedback %s", message)
-        color = "#991B1B" if error else "#166534" if success else "#24538C"
-        self._feedback.setStyleSheet(f"color: {color};")
-        self._feedback.setText(message)
-        self._feedback.setVisible(bool(message))
+        self._feedback_banner.set_message(message, 'error' if error else 'success' if success else 'info')
 
     def _current_products(self):
         products = []
@@ -171,11 +174,24 @@ class InventoryWindow(QWidget):
         return products
 
     def _visible_products(self, *, include_incomplete=True):
-        return [product for product in self._current_products() if matches_review_filters(
-            product, self._search.text(), self._publisher_filter.currentData(), self._type_filter.currentData(),
-            criteria=self._advanced_filters.criteria(),
-            incomplete_only=include_incomplete and self._incomplete_button.isChecked(),
-        )]
+        criteria = self._advanced_filters.criteria()
+        query = self._search.text()
+        publisher = self._publisher_filter.currentData()
+        work_type = self._type_filter.currentData()
+        incomplete = include_incomplete and self._incomplete_button.isChecked()
+
+        return [
+            product
+            for product in self._current_products()
+            if matches_review_filters(
+                product,
+                query,
+                publisher,
+                work_type,
+                criteria=criteria,
+                incomplete_only=incomplete,
+            )
+        ]
 
     def _update_filter_options(self):
         products = self._current_products()
@@ -195,7 +211,34 @@ class InventoryWindow(QWidget):
 
     def _filters_changed(self, *_):
         self._selected.clear()
-        self._fill_table()
+
+        for name in (
+            "_table", "_select_visible", "_sync_button", "_refresh_button",
+            "_edit_product", "_unpublish", "_publish", "_new_product",
+            "_supplier", "_apply", "_recover", "_open_web",
+        ):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.setEnabled(False)
+
+        self._filter_timer.start()
+
+    def _apply_filter_rows(self):
+        self._filter_timer.stop()
+
+        visible = {
+            self._key(product)
+            for product in self._visible_products()
+        }
+        self._selected.intersection_update(visible)
+
+        filter_table_rows(
+            self._table,
+            visible,
+            self._selected,
+        )
+
+        self._update_actions()
 
     def _reset_filters(self):
         with (
@@ -208,10 +251,12 @@ class InventoryWindow(QWidget):
             self._incomplete_button.setChecked(False)
         self._advanced_filters.clear(emit=False)
         self._more_filters.setChecked(False)
-        self._filters_changed()
+        self._selected.clear()
+        self._apply_filter_rows()
 
     def _fill_table(self):
-        products = self._visible_products()
+        self._filter_timer.stop()
+        products = self._current_products()
         self._selected.intersection_update(self._key(product) for product in products)
         rows = []
         for product in products:
@@ -220,7 +265,7 @@ class InventoryWindow(QWidget):
             if recommended:
                 note += " · " + "; ".join(recommended) + " (recomendado)"
             rows.append(tuple("" if field == "selected" else note if field == "issues"
-                              else _cell_text(product, field) for field, _, _ in INVENTORY_COLUMNS))
+                              else _cell_text(product, field) for field, _, _ in self.columns))
         with QSignalBlocker(self._table):
             set_rows(self._table, rows)
             for row, product in enumerate(products):
@@ -230,7 +275,7 @@ class InventoryWindow(QWidget):
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(Qt.CheckState.Checked if isbn in self._selected else Qt.CheckState.Unchecked)
         self._table.fit_title_rows()
-        self._update_actions()
+        self._apply_filter_rows()
 
     def _selection_changed(self, item):
         if item.column() != 0:
@@ -251,7 +296,7 @@ class InventoryWindow(QWidget):
             self._selected.difference_update(keys)
         else:
             self._selected.update(keys)
-        self._fill_table()
+        self._apply_filter_rows()
         logger.info("inventory.mark_visible selected=%s", len(self._selected))
 
     def _update_actions(self):

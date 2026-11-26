@@ -14,35 +14,8 @@ from yumekai_importer.catalog.review_fields import ISBN_INPUT, normalize_review_
 
 
 class ReviewCheckBox(QCheckBox):
-    def __init__(self, text: str) -> None:
-        super().__init__(text)
-        self.setStyleSheet(
-            "QCheckBox::indicator { width: 17px; height: 17px; border: 0; background: transparent; }"
-        )
-
-    def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
-        indicator = self.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, self)
-        box = QRectF(indicator).adjusted(1, 1, -1, -1)
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#896B84"), 1.2))
-        painter.setBrush(QColor("#FDE48A" if self.isChecked() else "#FFFFFF"))
-        painter.drawRoundedRect(box, 3, 3)
-        if self.isChecked():
-            center = box.center()
-            pen = QPen(QColor("#513C4E"), 1.8)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
-            painter.drawPolyline(QPolygonF([
-                center + QPointF(-4, 0),
-                center + QPointF(-1, 3),
-                center + QPointF(4, -3),
-            ]))
-        painter.end()
+    """Checkbox using the same 20px indicator as the catalog tables."""
+    pass
 
 
 class IsbnField(QWidget):

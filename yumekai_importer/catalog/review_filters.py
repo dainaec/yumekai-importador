@@ -23,6 +23,8 @@ def filter_error(criteria: dict) -> str:
     captions = {"retail_price": "PVP", "pages": "páginas", "volume": "tomo"}
     for field in RANGE_FIELDS:
         lower, upper = criteria.get(field + "_min", ""), criteria.get(field + "_max", "")
+        if lower == upper == "":
+            continue
         minimum, maximum = _number(lower), _number(upper)
         if (lower != "" and minimum is None) or (upper != "" and maximum is None):
             return "Revisa los valores del intervalo de " + captions[field] + "."
@@ -46,9 +48,19 @@ def matches_review_filters(product: dict, query="", publisher=None, work_type=No
         if value is not None and search_text(product.get(field)) != search_text(value):
             return False
     for field in TEXT_FILTERS:
-        wanted, actual = search_text(criteria.get(field)), search_text(product.get(field))
+        wanted = search_text(criteria.get(field))
+
         if field == "isbn":
-            wanted, actual = wanted.replace("-", "").replace(" ", ""), actual.replace("-", "").replace(" ", "")
+            wanted = wanted.replace("-", "").replace(" ", "")
+
+        if not wanted:
+            continue
+
+        actual = search_text(product.get(field))
+
+        if field == "isbn":
+            actual = actual.replace("-", "").replace(" ", "")
+
         if wanted not in actual:
             return False
     for field in CHOICE_FILTERS:

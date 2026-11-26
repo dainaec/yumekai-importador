@@ -23,4 +23,4 @@ def product():
             "yumekai_status": "outofstock", "review_status": "pending_review", "sku": None,
             "is_featured": 0, "image_url": "https://example.test/cover.jpg", "categories": ["Manga"],
             "updated_at": "2026-11-25 09:00:00", "_revision": "a" * 64,
-            "woocommerce_id": 21, "_store_revision": "b" * 64}
+            "publication_status": "publish", "product_type": "simple", "woocommerce_id": 21, "_store_revision": "b" * 64}

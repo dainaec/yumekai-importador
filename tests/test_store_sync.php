@@ -140,6 +140,13 @@ $tests['reused ISBN never attaches history to another product'] = static functio
     $result = reconcile($pdo, [1 => null, 2 => snapshot('A', 2)]);
     check($result['conflicting_store_isbns'] === 1 && row($pdo, 'A')['woocommerce_id'] == 1, 'Reasignó el historial a otro producto');
 };
+$tests['new draft and private shop products leave both pending queues without deleting history'] = function (): void {
+    $pdo = database(); insert($pdo, 'A', null); insert($pdo, 'B', null, ['review_status' => 'ready_to_upload']); insert($pdo, 'C', null);
+    $result = reconcile($pdo, [10 => snapshot('A',10,['publication_status'=>'draft']), 11 => snapshot('B',11,['publication_status'=>'private'])]);
+    check($result['linked'] === 2 && $result['unpublished'] === 2, 'Ignored products already in WooCommerce');
+    check((int) $pdo->query("SELECT COUNT(*) FROM products WHERE woocommerce_id IS NULL AND review_status IN ('pending_review','ready_to_upload')")->fetchColumn() === 1, 'Kept shop products in review');
+    check((int) $pdo->query('SELECT COUNT(*) FROM products')->fetchColumn() === 3, 'Deleted importer history');
+};
 foreach ($tests as $name => $test) {
     $test();
     echo 'OK: ' . $name . PHP_EOL;

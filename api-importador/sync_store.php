@@ -53,13 +53,13 @@ try {
     // Read identities first; WordPress hydration happens before taking importer locks.
     $existing = $pdo->query('SELECT woocommerce_id FROM products WHERE woocommerce_id IS NOT NULL')
         ->fetchAll(PDO::FETCH_COLUMN);
-    $published = wc_get_products(['status' => 'publish', 'limit' => -1, 'return' => 'ids',
+    $catalogIds = wc_get_products(['status' => ['publish', 'draft', 'pending', 'private'], 'limit' => -1, 'return' => 'ids',
         'orderby' => 'ID', 'order' => 'ASC']);
     global $wpdb;
-    if (!is_array($published) || $wpdb->last_error !== '') {
+    if (!is_array($catalogIds) || $wpdb->last_error !== '') {
         throw new RuntimeException('No se pudo obtener el catálogo completo de WooCommerce.');
     }
-    $ids = array_values(array_unique(array_merge(array_map('intval', $published), array_map('intval', $existing))));
+    $ids = array_values(array_unique(array_merge(array_map('intval', $catalogIds), array_map('intval', $existing))));
     $snapshots = [];
     foreach (array_chunk($ids, 100) as $batch) {
         store_prime_products($batch);

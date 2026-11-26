@@ -38,6 +38,19 @@ def sd_review_changes(product, result, *, stock_only=False):
                 changes[field] = value
                 if field == 'description' and not _empty(product.get(field)):
                     notes.append('Sinopsis abreviada completada desde SD')
+
+            author = " / ".join(
+            part.strip()
+            for part in (details.author or "").split("/")
+            if part.strip()
+        )
+
+        if author and author != str(product.get("author") or "").strip():
+            changes["author"] = author
+
+        if details.work_type and details.work_type != product.get("work_type"):
+            changes["work_type"] = details.work_type
+
         if (description_may_be_shortened(product.get('description')) and 'description' not in changes
                 and details.description and details.description != product.get('description')):
             notes.append('Sinopsis guardada conservada: el texto de SD no amplía el mismo comienzo')
@@ -48,18 +61,22 @@ def sd_review_changes(product, result, *, stock_only=False):
             notes.append(f'Formato SD: {details.sd_format or "sin datos"} → {book_format}')
         else:
             notes.append('Formato anterior conservado: falta confirmar la ficha pública de SD')
-        work_type = changes.get('work_type', product.get('work_type'))
-        if str(work_type or '').casefold() == 'manga' and canonical is not None and canonical != previous_demographic:
-            changes['demographic'] = canonical
-        if str(work_type or '').casefold() == 'manga' and _empty(product.get('demographic')) and details.demographic:
-            changes['demographic'] = canonical_demographic(details.demographic)
-        elif (str(work_type or '').casefold() == 'manga' and details.demographic
-              and canonical and canonical != canonical_demographic(details.demographic)):
-            notes.append(f'SD propone {canonical_demographic(details.demographic)}; se conserva la demografía revisada {canonical}')
-        if _empty(product.get('retail_price')) and details.retail_price is not None:
-            price = normalize_price(details.retail_price)
-            if price is not None and Decimal(price) > 0:
-                changes['retail_price'] = price
+        
+        work_type = changes.get("work_type", product.get("work_type"))
+
+        if str(work_type or "").casefold() == "manga":
+            proposed = canonical_demographic(details.demographic)
+
+            if proposed is not None and proposed != canonical:
+                changes["demographic"] = proposed
+        else:
+            changes.pop("demographic", None)
+
+        if details.work_type is None:
+            notes.append(
+                "Temática sin equivalencia confirmada; "
+                "se conserva la clasificación guardada"
+            )
     formatted = format_description(changes.get('description', product.get('description')))
     if formatted.changed:
         changes['description'] = formatted.text

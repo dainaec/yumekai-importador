@@ -1,3 +1,4 @@
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
@@ -13,7 +14,7 @@ class CsvExportDialog(QDialog):
         self.setWindowTitle("Generar CSV para WooCommerce")
         self.resize(690, 380)
         self.wordpress_reference = {}
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         layout.addWidget(QLabel(f"Se exportarán {count} ficha(s) "
                                + ("marcadas." if selected else "visibles con los filtros actuales.")))
         form = QFormLayout()
@@ -61,6 +62,7 @@ class CsvExportDialog(QDialog):
         buttons.addButton("Cancelar", QDialogButtonBox.ButtonRole.RejectRole)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        style_button_box(buttons)
         layout.addWidget(buttons)
         self._clear_reference()
 

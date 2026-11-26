@@ -1,4 +1,5 @@
 """Two deliberate steps before sending products with data warnings."""
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView,
@@ -18,7 +19,7 @@ class ExceptionApprovalDialog(QDialog):
         self._purpose = purpose
         self._normal_count = normal_count
         self.approved_keys = set()
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         caption = QLabel(
             f"{purpose}: {len(rows)} ficha(s) requieren autorización.\n"
             "1. Marca las excepciones que aceptas.  2. Confirma el resumen antes del envío.\n"
@@ -28,6 +29,8 @@ class ExceptionApprovalDialog(QDialog):
         caption.setWordWrap(True)
         layout.addWidget(caption)
         self.table = QTableWidget(len(rows), 4)
+        self.table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.table.verticalHeader().setDefaultSectionSize(38)
         self.table.setHorizontalHeaderLabels(["Autorizar", "Título", "ISBN / código completo", "Avisos"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -69,6 +72,7 @@ class ExceptionApprovalDialog(QDialog):
         cancel.setObjectName("clearButton")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
+        style_button_box(self.buttons)
         actions.addWidget(self.buttons)
         layout.addLayout(actions)
         self.table.itemChanged.connect(self._update_continue)

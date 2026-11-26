@@ -12,6 +12,10 @@ from yumekai_importer.diagnostics import logger, register_secret
 from yumekai_importer.version import APP_VERSION
 
 
+class StoreLoadCancelled(Exception):
+    pass
+
+
 class CatalogRequestError(ValueError):
     def __init__(self, message: str, status_code: int):
         super().__init__(message)
@@ -53,13 +57,18 @@ def _product_payload(product: Product) -> dict[str, object]:
     }
 
 class CatalogApi:
-    STORE_PAGE_WORKERS = 3
+    STORE_PAGE_WORKERS = 2
+    STORE_PAGE_SIZE = 200
 
     def __init__(self, base_url: str, username: str, password: str):
         self._products_url = f"{base_url.rstrip('/')}/products.php"
         self._create_product_url = f"{base_url.rstrip('/')}/create_product.php"
         self._review_url = f"{base_url.rstrip('/')}/review_products.php"
         self._sync_store_url = f"{base_url.rstrip('/')}/sync_store.php"
+        self._store_catalog_url = f"{base_url.rstrip('/')}/store_catalog.php"
+        self._store_products_url = f"{base_url.rstrip('/')}/store_products.php"
+        self.store_options = {}
+        self.last_load_metrics = {}
         self._store_review_url = f"{base_url.rstrip('/')}/store_review.php"
         self._inventory_products_url = (
             f"{base_url.rstrip('/')}/inventory_products.php"
@@ -109,6 +118,46 @@ class CatalogApi:
             raise ValueError("La API no devolvió un listado de fichas.")
 
         return rows
+
+    def list_store_identifiers(self) -> list[dict]:
+        try:
+            response = self._request(
+                "GET", self._store_products_url,
+                auth=self._auth, timeout=(5, 60),
+            )
+        except requests.exceptions.RequestException as error:
+            raise ValueError(
+                "No se pudieron consultar los identificadores de WooCommerce."
+            ) from error
+
+        self._check_response(response, "store_products.php")
+
+        try:
+            rows = response.json()
+        except ValueError as error:
+            raise ValueError(
+                "La consulta de identificadores no devolvió JSON válido."
+            ) from error
+
+        if not isinstance(rows, list) or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("isbn"), str)
+            or not row["isbn"].strip()
+            or type(row.get("woocommerce_id")) is not int
+            or row["woocommerce_id"] < 1
+            for row in rows
+        ):
+            raise ValueError(
+                "La API no devolvió un listado válido de ISBN e ID."
+            )
+
+        return [
+            {
+                "isbn": row["isbn"],
+                "woocommerce_id": row["woocommerce_id"],
+            }
+            for row in rows
+        ]
 
     @staticmethod
     def _check_response(response, endpoint: str) -> None:
@@ -241,17 +290,29 @@ class CatalogApi:
                 and isinstance(product.get('_store_revision'), str)
                 and re.fullmatch('[0-9a-f]{64}', product['_store_revision']) is not None)
 
-    def list_store_products(self, *, progress=None):
+    def list_store_products(self, *, progress=None, status='publish', cancel_event=None):
+        if status not in {'publish', 'draft', 'pending', 'private', 'all'}:
+            raise ValueError('Filtro de publicación no válido.')
         started = perf_counter()
 
+        def check_cancel():
+            if cancel_event is not None and cancel_event.is_set():
+                raise StoreLoadCancelled()
+
         def read_page(page):
-            response = self._request('GET', self._store_review_url, params={'page': page}, auth=self._auth, timeout=(5, 60))
-            self._check_response(response, 'store_review.php')
+            check_cancel()
+            response = self._request('GET', self._store_catalog_url,
+                                     params={'page': page, 'per_page': self.STORE_PAGE_SIZE, 'status': status},
+                                     auth=self._auth, timeout=(5, 35))
+            check_cancel()
+            self._check_response(response, 'store_catalog.php')
             body = response.json()
+            if not isinstance(body, dict) or body.get('api_version') != 3:
+                raise ValueError('Actualiza los PHP de importer-api a Yumekai 0.3.1 antes de consultar o editar la tienda.')
             if (not isinstance(body, dict) or type(body.get('page')) is not int or body['page'] != page
                     or type(body.get('pages')) is not int or not 0 <= body['pages'] <= 10000
                     or type(body.get('total')) is not int or body['total'] < 0
-                    or not isinstance(body.get('products'), list)):
+                    or body.get('status') != status or not isinstance(body.get('products'), list)):
                 raise ValueError('La API no devolvió una página válida de WooCommerce.')
             return body
 
@@ -265,6 +326,7 @@ class CatalogApi:
                 completed = len(first['products'])
                 try:
                     for job in as_completed(jobs):
+                        check_cancel()
                         body = job.result()
                         if body['total'] != first['total'] or body['pages'] != first['pages']:
                             raise ValueError('El catálogo cambió durante la lectura. Recarga para obtener una lista completa.')
@@ -276,11 +338,14 @@ class CatalogApi:
                     for job in jobs:
                         job.cancel()
                     raise
+        check_cancel()
         products, seen = [], set()
+        allowed = {'publish', 'draft', 'pending', 'private'} if status == 'all' else {status}
         for page in sorted(pages):
             body = pages[page]
             for product in body['products']:
-                if not self._valid_store_product(product) or product['woocommerce_id'] in seen:
+                if (not self._valid_store_product(product) or product['woocommerce_id'] in seen
+                        or product.get('publication_status') not in allowed):
                     raise ValueError('El listado de WooCommerce cambió o contiene fichas inesperadas. Recarga para comprobarlo.')
                 seen.add(product['woocommerce_id'])
                 products.append(product)
@@ -288,8 +353,80 @@ class CatalogApi:
                 raise ValueError('El listado de WooCommerce quedó incompleto. Recarga para comprobarlo.')
         if len(products) != first['total']:
             raise ValueError('El listado de WooCommerce quedó incompleto. Se conserva el listado anterior; recarga para comprobarlo.')
-        logger.info('store.loaded products=%s pages=%s elapsed=%.2fs', len(products), len(pages), perf_counter() - started)
+        options = first.get('options')
+        if not isinstance(options, dict) or not all(isinstance(options.get(key), kind) for key, kind in
+                [('categories', list), ('stock_statuses', dict), ('tax_classes', list)]):
+            raise ValueError('Faltan las categorías y los estados reales de la tienda. Actualiza store_catalog.php.')
+        self.store_options = options
+        self.last_load_metrics = {'elapsed': perf_counter() - started, 'pages': len(pages),
+                                  'server': [page.get('timing', {}) for page in pages.values()]}
+        logger.info('store.loaded products=%s pages=%s elapsed=%.2fs server=%s', len(products),
+                    len(pages), self.last_load_metrics['elapsed'], self.last_load_metrics['server'])
         return products
+
+    def create_store_product(self, fields, request_id):
+        body = self._catalog_post({'action': 'create', 'fields': fields, 'request_id': request_id})
+        if (not isinstance(body, dict) or body.get('request_id') != request_id
+                or not self._valid_store_product(body.get('product'))
+                or type(body.get('id')) is not int or body.get('id') != body['product']['woocommerce_id']):
+            raise ValueError('No se pudo confirmar la creación. Comprueba el catálogo antes de crear otra ficha.')
+        return body
+
+    def store_catalog_action(self, action, entries):
+        if action not in {'update', 'publish', 'unpublish'} or not 1 <= len(entries) <= 20:
+            raise ValueError('Selecciona entre 1 y 20 productos y una acción válida.')
+        body = self._catalog_post({'action': action, 'products': entries})
+        body = self._validate_store_receipt(body, entries)
+        expected_status = {'unpublish': 'draft', 'publish': 'publish'}.get(action)
+        if expected_status and any(row['product'].get('publication_status') != expected_status for row in body['saved']):
+            raise ValueError('No se pudo confirmar el estado de publicación. Recarga antes de reintentar.')
+        return body
+
+    def _catalog_post(self, payload):
+        try:
+            response = self._request('POST', self._store_catalog_url, auth=self._auth,
+                                     json=payload, timeout=(5, 60))
+        except requests.exceptions.RequestException as error:
+            raise ValueError('Se interrumpió la conexión y no se puede confirmar el resultado. '
+                             'Recarga la tienda antes de repetir la operación.') from error
+        self._check_response(response, 'store_catalog.php')
+        try:
+            body = response.json()
+        except ValueError as error:
+            raise ValueError('Respuesta sin confirmar. Recarga para comprobar el resultado.') from error
+        if not isinstance(body, dict) or body.get('api_version') != 3:
+            raise ValueError('No se pudo confirmar la operación con la API actual. Actualiza los PHP a Yumekai 0.3.1 y comprueba el resultado antes de reintentar.')
+        return body
+
+    @classmethod
+    def _validate_store_receipt(cls, body, entries):
+        expected = {entry['id'] for entry in entries}
+        if (len(expected) != len(entries) or not isinstance(body, dict)
+                or not isinstance(body.get('saved'), list) or not isinstance(body.get('failed'), list)):
+            raise ValueError('No se pudo confirmar la actualización en tienda. Recarga antes de reintentar.')
+        seen = set()
+        for saved in body['saved']:
+            if (not isinstance(saved, dict) or type(saved.get('id')) is not int or saved['id'] not in expected
+                    or saved['id'] in seen or not cls._valid_store_product(saved.get('product'))
+                    or saved['product']['woocommerce_id'] != saved['id']):
+                raise ValueError('Respuesta de actualización inesperada. Recarga la tienda para comprobarla.')
+            warnings = saved.get('warnings', [])
+            verification = saved.get('verification')
+            if not isinstance(warnings, list) or any(not isinstance(warning, str) for warning in warnings):
+                raise ValueError('El resultado de publicación contiene avisos incompletos. Actualiza la tienda para comprobarlo.')
+            if verification is not None and (not isinstance(verification, dict)
+                    or verification.get('database_status') != saved['product'].get('publication_status')):
+                raise ValueError('La confirmación de publicación no coincide con los datos guardados. Actualiza la tienda.')
+            seen.add(saved['id'])
+        for failed in body['failed']:
+            if (not isinstance(failed, dict) or type(failed.get('id')) is not int
+                    or failed['id'] not in expected or failed['id'] in seen
+                    or not isinstance(failed.get('message'), str) or type(failed.get('status_code')) is not int):
+                raise ValueError('Respuesta de actualización incompleta. Recarga la tienda para comprobarla.')
+            seen.add(failed['id'])
+        if seen != expected:
+            raise ValueError('Faltan resultados de WooCommerce. Recarga antes de reintentar.')
+        return body
 
     def update_store_products(self, entries):
         if not entries or len(entries) > 100:
@@ -325,68 +462,100 @@ class CatalogApi:
             raise ValueError('Faltan resultados de WooCommerce. Recarga antes de reintentar.')
         return body
 
-    def sync_store(self) -> dict[str, object]:
+    def sync_store(self, products: list[dict]) -> dict:
+        if not isinstance(products, list) or len(products) > 5000:
+            raise ValueError("Envía una lista de hasta 5000 coincidencias.")
+
+        expected, ids, entries = {}, set(), []
+
+        for row in products:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("isbn"), str)
+                or not row["isbn"].strip()
+                or type(row.get("woocommerce_id")) is not int
+                or row["woocommerce_id"] < 1
+            ):
+                raise ValueError(
+                    "Hay un ISBN o ID no válido entre las coincidencias."
+                )
+
+            isbn = row["isbn"]
+            identity = row["woocommerce_id"]
+
+            if isbn in expected or identity in ids:
+                raise ValueError(
+                    "Hay ISBN o ID repetidos entre las coincidencias."
+                )
+
+            expected[isbn] = identity
+            ids.add(identity)
+            entries.append({
+                "isbn": isbn,
+                "woocommerce_id": identity,
+            })
+
+        if not entries:
+            return {
+                "sync_version": 3,
+                "linked": 0,
+                "already_linked": 0,
+                "products": [],
+            }
+
         try:
-            response = self._request('POST',
-                self._sync_store_url,
-                json={"action": "sync"},
-                auth=self._auth,
-                timeout=(5, 120),
+            response = self._request(
+                "POST", self._sync_store_url,
+                json={"action": "link", "products": entries},
+                auth=self._auth, timeout=(5, 120),
             )
         except requests.exceptions.RequestException as error:
             raise ValueError(
-                "No se pudo confirmar la sincronización. Recarga las fichas "
-                "para comprobar el resultado antes de reintentar."
+                "No se pudo confirmar el guardado de los vínculos. "
+                "Pulsa Actualizar lista antes de reintentar."
             ) from error
 
         self._check_response(response, "sync_store.php")
 
+        invalid = (
+            "La respuesta no confirma todos los vínculos. "
+            "Pulsa Actualizar lista antes de reintentar."
+        )
+
         try:
             result = response.json()
         except ValueError as error:
-            raise ValueError(
-                "Respuesta inesperada. Recarga las fichas para comprobar el resultado."
-            ) from error
-
-        if isinstance(result, dict) and result.get('sync_version') != 2:
-            raise ValueError('Actualiza sync_store.php y sus archivos de apoyo a Yumekai 0.2.0 para sincronizar las copias.')
-
-        counters = (
-            "store_isbns",
-            "linked",
-            "already_linked",
-            "not_in_importer",
-            "invalid_store_isbns",
-            "conflicting_store_isbns",
-        )
+            raise ValueError(invalid) from error
 
         if (
             not isinstance(result, dict)
+            or type(result.get("sync_version")) is not int
+            or result["sync_version"] != 3
             or any(
                 type(result.get(key)) is not int or result[key] < 0
-                for key in counters
+                for key in ("linked", "already_linked")
             )
-            or result["linked"]
-            + result["already_linked"]
-            + result["not_in_importer"] + result['conflicting_store_isbns'] != result["store_isbns"]
+            or result["linked"] + result["already_linked"] != len(entries)
             or not isinstance(result.get("products"), list)
-            or len(result["products"]) != result["linked"]
+            or len(result["products"]) != len(entries)
         ):
-            raise ValueError(
-                "Respuesta incompleta. Recarga las fichas para comprobar el resultado."
-            )
-        for field in ('updated', 'unchanged', 'missing', 'unpublished', 'conflicts', 'conflicting_store_isbns'):
-            if type(result.get(field)) is not int or result[field] < 0:
-                raise ValueError('La sincronización devolvió un recuento incompleto. Recarga antes de reintentar.')
-        issues = result.get('issues')
-        if not isinstance(issues, list) or any(not isinstance(issue, dict)
-                or not isinstance(issue.get('isbn'), str) or type(issue.get('woocommerce_id')) is not int
-                or not isinstance(issue.get('status'), str) or not isinstance(issue.get('message'), str)
-                for issue in issues):
-            raise ValueError('El resultado de sincronización está incompleto. Recarga antes de reintentar.')
-        logger.info('store.sync_result counts=%s', {key: value for key, value in result.items()
-                    if type(value) is int})
-        for issue in issues:
-            logger.warning('store.sync_issue id=%s isbn=%s status=%s message=%s', issue['woocommerce_id'],
-                           issue['isbn'], issue['status'], issue['message'])
+            raise ValueError(invalid)
+
+        confirmed = {}
+
+        for row in result["products"]:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("isbn"), str)
+                or row["isbn"] in confirmed
+                or type(row.get("woocommerce_id")) is not int
+                or expected.get(row["isbn"]) != row["woocommerce_id"]
+            ):
+                raise ValueError(invalid)
+
+            confirmed[row["isbn"]] = row["woocommerce_id"]
+
+        if confirmed != expected:
+            raise ValueError(invalid)
+
         return result

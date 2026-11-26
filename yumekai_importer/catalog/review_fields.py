@@ -21,10 +21,21 @@ def normalize_review_identifier(text: str) -> str:
     code = str(text).strip()
     if not code:
         raise ValueError("Falta el ISBN o código del producto.")
+
     if len(code) > 128 or re.search(r"[\x00-\x1f\x7f]", code):
-        raise ValueError("El código admite hasta 128 caracteres y no puede contener saltos de línea ni caracteres de control.")
-    compact = re.sub(r"[\s-]+", "", code)
-    return compact if re.fullmatch(r"[0-9]{13}", compact) else code
+        raise ValueError(
+            "El código admite hasta 128 caracteres sin caracteres de control."
+        )
+
+    compact = re.sub(r"[\s\-\u2010-\u2015\u2212]+", "", code)
+
+    if re.fullmatch(r"[0-9]+", compact):
+        return compact
+
+    if re.fullmatch(r"[0-9]{9}[0-9xX]", compact):
+        return compact.upper()
+
+    return code
 
 
 def normalize_review_isbn(text: str) -> str:

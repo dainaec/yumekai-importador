@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 
 from lxml import html
 
-from yumekai_importer.importers.sd.codes import normalize_sd_code
+from yumekai_importer.importers.sd.codes import normalize_sd_code, sd_codes_match, sd_code_variants
 from yumekai_importer.importers.sd.availability import (
     SdStockInfo, consultation_day, prefer_stock_info, read_stock_info,
 )
@@ -91,15 +91,35 @@ def _read_public_detail(page, source_url, isbn, stop, *, checked_on=None):
     return page, source_url, replace(details, format_confirmed=False), message
 
 
-def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupResult:
+def _lookup_sd_query(
+    isbn: str,
+    query: str,
+    stop_requested: Event | None = None,
+) -> SdLookupResult:
     stop = stop_requested if stop_requested is not None else Event()
     checked_on = consultation_day()
     normalized = normalize_sd_code(isbn)
     if normalized is None:
         raise ValueError('La ficha no tiene un código para buscar en SD.')
-    url = SD_CATALOG_URL + '?' + urlencode({'query': normalized, 'reset': 's'})
+    url = SD_CATALOG_URL + '?' + urlencode({
+        'query': query,
+        'reset': 's',
+    })
     page, final = _fetch_page(url, stop)
     if page.get_element_by_id('txtISBN', None) is not None or page.get_element_by_id('txtEan', None) is not None:
+        article = _main_article(page)
+
+        if not any(
+            sd_codes_match(normalized, _text(article, field))
+            for field in ("txtISBN", "txtEan")
+        ):
+            return SdLookupResult(
+                normalized,
+                "not_found",
+                url=final,
+                message="La ficha devuelta por SD tiene otro código.",
+            )
+        
         fallback = read_stock_info(page, checked_on=checked_on)
         page, final, details, message = _read_public_detail(page, final, normalized, stop, checked_on=checked_on)
         stock = prefer_stock_info(read_stock_info(page, checked_on=checked_on), fallback)
@@ -111,7 +131,7 @@ def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupRe
     for card in page.find_class('fileproduct'):
         fields = card.find_class('dvISBN')
         actual = normalize_sd_code(fields[0].text_content()) if fields else None
-        if actual != normalized:
+        if not sd_codes_match(actual, normalized):
             continue
         matched = True
         labels = card.find_class('estado')
@@ -152,3 +172,43 @@ def lookup_sd_isbn(isbn: str, stop_requested: Event | None = None) -> SdLookupRe
         return SdLookupResult(normalized, 'not_found', url=final,
                               message='Los resultados de SD no coinciden exactamente con el código.')
     raise ValueError('SD devolvió una página sin una ficha ni resultados reconocibles. Vuelve a intentarlo.')
+
+def lookup_sd_isbn(
+    isbn: str,
+    stop_requested: Event | None = None,
+    *,
+    title: str = "",
+) -> SdLookupResult:
+    stop = stop_requested if stop_requested is not None else Event()
+    variants = sd_code_variants(isbn)
+
+    if not variants:
+        raise ValueError("La ficha no tiene un código para buscar en SD.")
+
+    last = None
+    tried = set()
+
+    for query in variants:
+        if stop.is_set():
+            raise SdLookupCancelled()
+
+        tried.add(query.casefold())
+        last = _lookup_sd_query(isbn, query, stop)
+
+        if last.status == "found":
+            return last
+
+    if title:
+        query = " ".join(str(title).split())
+
+        if query and query.casefold() not in tried:
+            if stop.is_set():
+                raise SdLookupCancelled()
+
+            last = _lookup_sd_query(isbn, query, stop)
+
+            if last.status == "found":
+                return last
+
+    assert last is not None
+    return last

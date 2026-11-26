@@ -1,3 +1,4 @@
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
@@ -32,11 +33,12 @@ class _ImportIsbnDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
 
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         layout.setContentsMargins(18, 16, 18, 14)
         layout.addWidget(title)
         layout.addWidget(self._isbn)
         layout.addWidget(self._error)
+        style_button_box(buttons)
         layout.addWidget(buttons)
         self.setStyleSheet("""
             QDialog { background-color: #FFFFFF; }

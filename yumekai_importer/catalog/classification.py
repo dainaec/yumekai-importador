@@ -31,7 +31,7 @@ def canonical_demographic(value):
     return ALIASES.get(classification_key(text), text) or None
 
 
-def sd_classification(labels):
+def _sd_classification_fallback(labels):
     topics = set()
     for text in labels:
         if text:
@@ -55,3 +55,64 @@ def sd_classification(labels):
         candidates = specific or mapped
         demographic = next(iter(candidates)) if len(candidates) == 1 else None
     return work_type, demographic
+
+_SD_CSV_RULES = {
+    ('MANGA', 'SHONEN', ''): ('Manga', 'Shonen'),
+    ('MANGA', 'SEINEN', ''): ('Manga', 'Seinen'),
+    ('MANGA', 'SEINEN', 'EROGURO'): ('Manga', 'Seinen'),
+    ('MANGA', 'SHOJO', ''): ('Manga', 'Shojo'),
+    ('MANGA', 'JOSEI', ''): ('Manga', 'Josei'),
+    ('MANGA', 'KODOMO', ''): ('Manga', 'Kodomo'),
+    ('MANGA', 'YAOI', ''): ('Manga', 'Yaoi / BL'),
+    ('MANGA', 'YURI', ''): ('Manga', 'Yuri'),
+    ('MANGA', 'HENTAI', ''): (None, None),
+    ('MANGA', 'BOYS LOVE', ''): ('Manga', 'Yaoi / BL'),
+    ('MANGA', 'SPOKON', ''): ('Manga', 'Shonen'),
+    ('MANGA', 'TERROR', ''): ('Manga', 'Seinen'),
+    ('MANGA', 'MANGA ADULTO', ''): ('Manga', 'Seinen'),
+    ('MANGA', 'NOVELAS MANGA', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('MANGA', 'MANHWA', ''): ('Manhwa', None),
+    ('MANGA', 'ISEKAI', ''): (None, None),
+    ('MANGA', 'TEEN’S LOVE', ''): ('Manga', 'Yaoi / BL'),
+    ('MANGA', 'ECCHI', ''): (None, None),
+    ('ART-BOOKS', 'ART-BOOKS COMIC', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('ART-BOOKS', 'ART-BOOKS MANGA & ANIME', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('ART-BOOKS', 'ART-BOOKS VIDEOJUEGOS', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('ART-BOOKS', 'ART-BOOKS CINE & TV', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('COMIC', 'ART-BOOKS', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('LIBROS NO FICCIÓN', 'COMIC / MANGA', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('LIBROS NO FICCIÓN', 'COMIC / MANGA', 'ENSAYO'): ('Manga', 'Artbooks, guías y novelas'),
+    ('LIBROS NO FICCIÓN', 'APRENDE A DIBUJAR', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'APRENDE A DIBUJAR', 'EDUCATIVO'): (None, None),
+    ('LIBROS NO FICCIÓN', 'CINE, SERIES, TV, MÚSICA', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'VIDEOJUEGOS', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'DIDÁCTICO', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'IDIOMAS', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'HISTORÍA & CULTURA', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'BIOGRAFÍAS', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'VIAJES', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'COCINA', ''): (None, None),
+    ('LIBROS NO FICCIÓN', 'ARTE & ILUSTRACIONES', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('LIBROS FICCIÓN', 'LIBRO ILUSTRADO', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('LIBROS FICCIÓN', 'NOVELA LIGERA', ''): ('Manga', 'Artbooks, guías y novelas'),
+    ('LIBROS FICCIÓN', 'NOVELA LIGERA', 'SEINEN'): ('Manga', 'Artbooks, guías y novelas'),
+}
+
+_SD_CSV_RULES = {
+    tuple(classification_key(part) for part in key): value
+    for key, value in _SD_CSV_RULES.items()
+}
+
+
+def sd_classification(labels):
+    values = tuple(labels)
+    key = tuple(
+        classification_key(value)
+        for value in (values + ("", "", ""))[:3]
+    )
+
+    if key in _SD_CSV_RULES:
+        work_type, demographic = _SD_CSV_RULES[key]
+        return work_type, canonical_demographic(demographic)
+
+    return _sd_classification_fallback(values)

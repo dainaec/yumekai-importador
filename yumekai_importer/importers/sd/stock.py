@@ -11,7 +11,7 @@ from itertools import count
 import truststore
 from lxml import html
 
-from yumekai_importer.importers.sd.codes import normalize_sd_code
+from yumekai_importer.importers.sd.codes import normalize_sd_code, sd_code_variants
 from yumekai_importer.importers.sd.availability import SdStockInfo
 
 
@@ -58,7 +58,8 @@ def read_sd_stock(
     # SD's comparison key is separate from the literal code saved in the catalog.
     originals = {}
     for requested in isbns:
-        originals.setdefault(normalize_sd_code(requested), set()).add(requested)
+        for key in sd_code_variants(requested):
+            originals.setdefault(key, set()).add(requested)
 
     context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     client = build_opener(HTTPCookieProcessor(CookieJar()), HTTPSHandler(context=context))

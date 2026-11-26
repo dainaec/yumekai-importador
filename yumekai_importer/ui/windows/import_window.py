@@ -1,3 +1,4 @@
+from yumekai_importer.ui.widgets.presentation import button_role
 from yumekai_importer.diagnostics import logger
 from collections.abc import Callable
 from decimal import Decimal
@@ -95,8 +96,8 @@ class ImportWindow(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
-        sd_button = QPushButton("Cargar SD")
-        norma_button = QPushButton("Cargar Norma")
+        sd_button = button_role(QPushButton("Cargar SD"), "soft")
+        norma_button = button_role(QPushButton("Cargar Norma"), "soft")
         clear_button = QPushButton("Limpiar")
         clear_button.setObjectName("clearButton")
 
@@ -109,7 +110,7 @@ class ImportWindow(QWidget):
         actions.addStretch()
 
         self._file_buttons = (sd_button, norma_button, clear_button)
-        self.save_button = QPushButton("Guardar carga")
+        self.save_button = button_role(QPushButton("Guardar carga"), "primary")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save_to_hostalia)
 
@@ -354,6 +355,7 @@ class ImportWindow(QWidget):
             return
 
         issue_note = ""
+        rejected = 0
         logger.info("import.saved created=%s duplicates=%s exceptions_skipped=%s", counts['created'],
                     counts['duplicates'], worker.skipped_exceptions)
         if self._result.issues:
@@ -371,6 +373,8 @@ class ImportWindow(QWidget):
             f"\nExcepciones sin autorizar, no enviadas: {worker.skipped_exceptions}."
             f"{issue_note}",
         )
+        if worker.skipped_exceptions == 0 and rejected == 0:
+            self._clear()
 
     def closeEvent(self, event) -> None:
         if self._save_worker is not None:

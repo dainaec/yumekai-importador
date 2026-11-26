@@ -50,7 +50,7 @@ function store_reconcile(PDO $pdo, array $current, array $snapshots): array
         'conflicts' => 0, 'products' => [], 'issues' => []];
     $catalog = [];
     foreach ($snapshots as $id => $snapshot) {
-        if ($snapshot === null || $snapshot['publication_status'] !== 'publish') { continue; }
+        if ($snapshot === null || !in_array($snapshot['publication_status'], ['publish', 'draft', 'pending', 'private'], true)) { continue; }
         $isbn = trim((string) $snapshot['isbn']);
         $compact = preg_replace('/[\s-]+/u', '', $isbn);
         if (is_string($compact) && preg_match('/\A[0-9]{13}\z/', $compact)) { $isbn = $compact; }
@@ -105,6 +105,10 @@ function store_reconcile(PDO $pdo, array $current, array $snapshots): array
             $summary['products'][] = ['isbn' => $isbn, 'woocommerce_id' => $id];
         } else { $summary['already_linked']++; }
         $copy($isbn, $id, $row, $snapshots[$id], $link);
+        if ($snapshots[$id]['publication_status'] !== 'publish') {
+            $summary['unpublished']++;
+            $issue($isbn, $id, $snapshots[$id]['publication_status'], 'Ya existe en WooCommerce sin publicar. Vínculo conservado y ficha retirada de las listas de preparación.');
+        }
     }
     // Inspect every existing link, including trash, drafts and permanently deleted IDs.
     foreach ($byId as $id => $isbns) {

@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
 from yumekai_importer.catalog.product import Product
-from yumekai_importer.catalog.title_parser import analyze_title, collection_context, infer_series_and_volume
+from yumekai_importer.catalog.title_parser import analyze_title, collection_context, infer_series_and_volume, clean_title
 from yumekai_importer.importers.excel_values import parse_price
 from yumekai_importer.catalog.review_fields import normalize_review_identifier, normalize_review_isbn
 
@@ -59,7 +59,7 @@ class ImportResult:
             isbn = normalize_review_identifier("" if raw_code is None else str(raw_code))
         except ValueError:
             isbn = None
-        title = str(title_value or "").strip()
+        title = clean_title(str(title_value or ""))
 
         if isbn is None:
             detail = "Falta el ISBN."

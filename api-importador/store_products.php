@@ -61,7 +61,7 @@ try {
             ON m.post_id = p.ID
             AND m.meta_key = '_yk_isbn'
         WHERE p.post_type = 'product'
-          AND p.post_status = 'publish'
+          AND p.post_status IN ('publish', 'draft', 'pending', 'private', 'future')
           AND TRIM(m.meta_value) <> ''
         ORDER BY p.ID",
         ARRAY_A

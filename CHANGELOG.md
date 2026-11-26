@@ -1,10 +1,82 @@
-# Historial de cambios
+# Cambios de Yumekai
+
+Las novedades en desarrollo se registran en Sin publicar hasta preparar su distribución. La versión del programa se define en yumekai_importer/version.py.
+
+## [Sin publicar] · 26/11/2026
+
+### Añadido
+
+- Eliminación selectiva o completa de las recuperaciones locales desde Ayuda y registros, disponible sin conexión.
+- Limpieza de pendientes, revisiones archivadas, propuestas SD de tienda, ediciones manuales, creaciones pendientes y temporales.
+- Inicio con el logo SVG de Yumekai y tres accesos independientes.
+
+### Mejorado
+
+- Búsqueda con espera de 200 ms tras la última pulsación y reutilización de las filas cargadas.
+- Sincronización de las filas filtradas con las columnas fijas y las casillas.
+- Lectura de los controles de filtro fuera del recorrido de cada ficha y omisión de filtros vacíos.
+- Equivalencias de temática SD acordadas; diferencias de clasificación y autoría propuestas para revisión.
+- Autoría múltiple de SD separada por /.
+- Búsqueda por equivalentes válidos de ISBN-10 e ISBN-13, verificando el código de la ficha principal.
+- Revisión de colección/tomo por diferencias, con limpieza de sufijos COMIC, tomos intermedios, tomo por defecto y rangos de packs.
+- Limpieza de la pantalla tras guardar cargas completas sin incidencias pendientes.
+
+### Corregido
+
+- Sustituido el cruce automático con WooCommerce por Comprobar productos ya subidos, ejecutado expresamente tras importar en la tienda.
+- Separación entre Actualizar lista y el cruce con WooCommerce.
+- Normalización de códigos numéricos con guiones o espacios, incluidos ISBN-10 y códigos largos admitidos.
+- Propuestas de autoría y clasificación que antes se conservaban sin ofrecer la diferencia al existir un valor previo.
+- Descarte en memoria de las recuperaciones eliminadas para impedir que vuelvan a guardarse al cerrar.
+- Aviso de limpieza incompleta y conservación del estado de las recuperaciones cuya eliminación falla.
+- Restaurada la inicialización de _api_override en InventoryWindow para cargar Productos en tienda.
+
+### Distribución y validación
+
+- La limpieza local conserva el catálogo del servidor y no revierte creaciones ya completadas.
+- La normalización de códigos no renombra automáticamente todos los registros históricos.
+- Validar la integración y el ejecutable Windows antes de publicar una nueva versión. Esta entrada no declara una versión distribuida ni una ejecución completa de todas las pruebas.
+
+## 0.3.1 · 25/11/2026
+
+- Jerarquía visual compartida de botones principales, secundarios, de consulta y retirada; cuadros de confirmación en español.
+- Casillas grandes iguales en tienda, pendientes y revisiones; avisos y cabeceras de diálogo comunes.
+- Colección/tomo utiliza la misma revisión por campos que SD y guarda lo aceptado sin abrir una segunda revisión equivalente.
+- Se elimina el menú técnico de tienda y la recarga duplicada. Actualizar tienda vuelve a consultar WooCommerce; Recuperar revisión solo aparece cuando hay una copia local.
+- Cruce automático con WooCommerce antes de cargar ambas listas de revisión. También reconoce borradores, privados y pendientes de publicación. Una recuperación local no reintroduce fichas ya retiradas de esas listas.
+- Identificación por el ISBN real, con respaldo de GTIN o SKU YMK cuando falta el campo personalizado. Nunca se vincula por parecido del título.
+- Confirmación de publicación con ID/título/ISBN y acceso a la URL exacta del producto.
+- Verificación del estado en la base de datos antes y después de COMMIT; invalidación de WordPress/WooCommerce y solicitud de purga de producto/URL a W3 Total Cache después de confirmar el guardado.
+- Las peticiones a la API evitan cachés persistentes. Se precargan también los posts de adjuntos para reducir las consultas de portadas.
+- API de catálogo versión 3: la aplicación avisa si faltan los PHP de esta actualización.
+- Se mantienen el endpoint y los setters del guardado SD validado.
+
+## 0.3.0 · 25/11/2026
+
+Preparada a partir de `ymk_importer.zip`, conservando el endpoint de guardado SD validado por la usuaria.
+
+- Lectura paginada del catálogo de WooCommerce: publicados, borradores y todo el catálogo (incluidos privados y pendientes, sin papelera).
+- El tipo de obra sigue las categorías actuales y sus padres, incluso la grafía `Manwha`. `_yk_item_kind` queda como respaldo cuando no hay categoría reconocida. Se informa de categorías contradictorias.
+- La tabla muestra los datos guardados; las propuestas SD se mantienen separadas hasta su aceptación.
+- Progreso, tiempo transcurrido y cancelación de lectura. Se conserva la lista anterior ante error o cancelación. Dos peticiones simultáneas, 200 productos por página, cachés de WordPress precargadas por lote.
+- Registro de tiempos del servidor, red y construcción de tabla; se mantiene la lectura al volver desde Inicio y se actualiza con Recargar.
+- Nuevo producto simple como borrador, SKU sugerido `YMK-código`, selección expresa de impuesto y recuperación de una creación sin confirmar mediante el mismo identificador persistente.
+- Edición manual de fichas simples: título, ISBN/referencia con desbloqueo, SKU, datos bibliográficos, precios independientes, estado, destacado, impuesto, categorías y descripciones. Consulta de datos recibidos y metadatos en una pestaña; recuperación de ediciones manuales sin confirmar.
+- Despublicar pasa a borrador y conserva ID y datos. Publicar restaura el mismo producto tras confirmación.
+- Validación de versión antes de escribir, resultados individuales por producto y detención de lotes tras un resultado sin confirmar.
+- `build.ps1` conserva las opciones de compilación facilitadas y añade registro de consola y comprobación del ZIP generado.
+
+Pruebas locales: Python/Qt, PHP con WordPress/WooCommerce simulados y transacciones SQLite; no sustituyen la comprobación contra Hostalia. El ejecutable Windows debe compilarse en Windows.
+
+---
+
+## Notas históricas de desarrollo
 
 Todos los cambios relevantes del importador y gestor de catálogo de Yumekai se documentan en este archivo.
 
-El proyecto utiliza versionado semántico. Los cambios en desarrollo se mantienen en **Sin publicar** hasta preparar su distribución; la versión declarada en el código sigue siendo `0.1.0`.
+El siguiente bloque conserva notas históricas del 25/11/2026; sus limitaciones describen ese estado anterior, no el funcionamiento actual.
 
-## [Sin publicar]
+### Estado de desarrollo · 25/11/2026
 
 Estado de desarrollo documentado a 2026-11-25. Incluye las actualizaciones de excepciones, disponibilidad SD y revisión de productos publicados. La conexión de escritura con la tienda está implementada y probada localmente; su comprobación real en Hostalia está pendiente.
 

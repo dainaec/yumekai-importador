@@ -1,105 +1,248 @@
+"""Review only actual changes to title, collection and volume."""
+import re
+
 from PySide6.QtCore import QRegularExpression, QSignalBlocker, Qt
 from PySide6.QtGui import QRegularExpressionValidator
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QDialogButtonBox, QLabel,
-                              QLineEdit, QStyledItemDelegate, QVBoxLayout)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QLabel,
+    QLineEdit,
+    QStyledItemDelegate,
+)
 
-from yumekai_importer.catalog.review_fields import VOLUME_INPUT, normalize_volume
-from yumekai_importer.catalog.title_parser import analyze_title, collection_context
-from yumekai_importer.ui.widgets.tables import make_table, set_rows
+from yumekai_importer.catalog.review_fields import (
+    VOLUME_INPUT,
+    normalize_volume,
+)
+from yumekai_importer.catalog.title_parser import (
+    analyze_title,
+    clean_title,
+    collection_context,
+)
+from yumekai_importer.ui.widgets.change_review_dialog import (
+    ChangeReviewDialog,
+)
 
 
-class _VolumeDelegate(QStyledItemDelegate):
+def _comparable(field, value):
+    text = "" if value is None else str(value).strip()
+
+    if field == "volume" and re.fullmatch(VOLUME_INPUT, text):
+        return "-".join(
+            str(int(number)) for number in text.split("-")
+        )
+
+    return text
+
+
+def _review_proposals(products, known_titles=()):
+    context = collection_context([
+        *known_titles,
+        *(product.get("title") or "" for product in products.values()),
+    ])
+    rows, checks, reasons = {}, {}, {}
+
+    for key, product in products.items():
+        title = clean_title(str(product.get("title") or ""))
+        proposal = analyze_title(
+            title,
+            str(product.get("isbn") or ""),
+            known_series=context,
+        )
+        default = getattr(proposal, "default_volume", False)
+        fields = {}
+
+        # La limpieza del título es independiente de la inferencia del tomo.
+        if title and (
+            _comparable("title", title)
+            != _comparable("title", product.get("title"))
+        ):
+            fields["title"] = title
+            checks[key, "title"] = True
+            reasons[key, "title"] = (
+                "Se elimina la etiqueta COMIC del final."
+            )
+
+        if (proposal.reliable or default) and proposal.series:
+            if (
+                _comparable("series", proposal.series)
+                != _comparable("series", product.get("series"))
+            ):
+                fields["series"] = proposal.series
+                checks[key, "series"] = proposal.reliable
+                reasons[key, "series"] = proposal.reason
+
+        current_volume = _comparable(
+            "volume", product.get("volume")
+        )
+
+        if (
+            proposal.volume is not None
+            and (proposal.reliable or default)
+            and not (default and current_volume)
+            and (
+                _comparable("volume", proposal.volume)
+                != current_volume
+            )
+        ):
+            fields["volume"] = proposal.volume
+            checks[key, "volume"] = True
+            reasons[key, "volume"] = proposal.reason
+
+        if fields:
+            rows[key] = {
+                "product": product,
+                "changes": fields,
+            }
+
+    return rows, checks, reasons
+
+
+class _ProposalDelegate(QStyledItemDelegate):
     def createEditor(self, parent, option, index):
         editor = QLineEdit(parent)
-        editor.setValidator(QRegularExpressionValidator(QRegularExpression(VOLUME_INPUT), editor))
+        _, field = index.model().index(
+            index.row(), 0
+        ).data(Qt.ItemDataRole.UserRole)
+
+        if field == "volume":
+            editor.setValidator(
+                QRegularExpressionValidator(
+                    QRegularExpression(VOLUME_INPUT),
+                    editor,
+                )
+            )
+
         return editor
 
 
-class TitleReviewDialog(QDialog):
-    def __init__(self, products: dict, parent=None, *, known_titles=()):
-        super().__init__(parent)
-        self.setWindowTitle('Revisar colección y tomo')
+class TitleReviewDialog(ChangeReviewDialog):
+    def __init__(self, products, parent=None, *, known_titles=()):
+        rows, checks, reasons = _review_proposals(
+            products, known_titles
+        )
+        super().__init__(rows, parent=parent)
+
+        self.setWindowTitle("Revisar título, colección y tomo")
+        heading = self.findChild(QLabel, "dialogTitle")
+        if heading is not None:
+            heading.setText(self.windowTitle())
+
         self.changes = {}
-        self._products = products
-        self._keys = list(products)
-        context = collection_context([*known_titles, *(p.get('title') or '' for p in products.values())])
-        self._proposals = [analyze_title(str(p.get('title') or ''), str(p.get('isbn') or ''), known_series=context)
-                           for p in products.values()]
-        screen = self.screen()
-        available = screen.availableGeometry() if screen is not None else None
-        self.resize(min(1320, available.width() - 40) if available else 1100,
-                    min(700, available.height() - 60) if available else 600)
-        layout = QVBoxLayout(self)
-        text = QLabel('Compara los valores actuales y propuestos. Solo se aplicarán las filas marcadas. '
-                      'Puedes editar Colección propuesta y Tomo propuesto con doble clic. '
-                      'Los casos dudosos quedan desmarcados y sin un tomo inventado.')
-        text.setWordWrap(True)
-        layout.addWidget(text)
-        self.table = make_table(['Aplicar', 'Título', 'Tomo actual', 'Tomo propuesto',
-                                 'Colección actual', 'Colección propuesta', 'Motivo'], stretch_column=None,
-                                column_widths={0: 75, 1: 330, 2: 100, 3: 140, 4: 260, 5: 300, 6: 550},
-                                freeze_title=True, frozen_columns=2)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
-        self.table.setItemDelegateForColumn(3, _VolumeDelegate(self.table))
-        rows = []
-        for product, proposal in zip(products.values(), self._proposals):
-            rows.append(('', str(product.get('title') or ''), str(product.get('volume') or ''),
-                         proposal.volume or '', str(product.get('series') or ''), proposal.series, proposal.reason))
-        set_rows(self.table, rows)
-        for row, proposal in enumerate(self._proposals):
-            key = self._keys[row]
-            product = products[key]
-            different = proposal.series != product.get('series') or proposal.volume != (product.get('volume') or None)
-            for col in range(self.table.columnCount()):
-                item = self.table.item(row, col)
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            for col in (3, 5):
-                item = self.table.item(row, col)
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
-            mark = self.table.item(row, 0)
-            mark.setFlags(mark.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            mark.setCheckState(Qt.CheckState.Checked if proposal.reliable and different else Qt.CheckState.Unchecked)
-        self.table.itemChanged.connect(self._item_changed)
-        self.table.fit_title_rows()
-        layout.addWidget(self.table, 1)
+        self.message.setText(
+            "Se muestran solo los campos con cambios. "
+            "El tomo 1 por defecto se propone únicamente "
+            "si el campo está vacío. "
+            "Doble clic en Propuesto para editar; "
+            "en Actual para leerlo completo. "
+            "Al guardar, se descartan las propuestas desmarcadas. "
+            "Cancelar conserva la revisión anterior."
+        )
+
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+        )
+        self.table.setItemDelegateForColumn(
+            4, _ProposalDelegate(self.table)
+        )
+        self.table.cellDoubleClicked.disconnect(self._show_value)
+        self.table.cellDoubleClicked.connect(
+            lambda row, column: self._show_value(row, column)
+            if column == 3 else None
+        )
+
+        labels = {
+            "title": "Título",
+            "series": "Colección",
+            "volume": "Tomo",
+        }
+
+        for row in range(self.table.rowCount()):
+            key, field = self.table.item(row, 0).data(
+                Qt.ItemDataRole.UserRole
+            )
+
+            self.table.item(row, 2).setText(labels[field])
+            self.table.item(row, 0).setCheckState(
+                Qt.CheckState.Checked
+                if checks[key, field]
+                else Qt.CheckState.Unchecked
+            )
+
+            for column in (1, 2, 3):
+                item = self.table.item(row, column)
+                item.setFlags(
+                    item.flags() & ~Qt.ItemFlag.ItemIsEditable
+                )
+
+            item = self.table.item(row, 4)
+            item.setFlags(
+                item.flags() | Qt.ItemFlag.ItemIsEditable
+            )
+            item.setToolTip(reasons[key, field])
+
         self.error = QLabel()
+        self.error.setObjectName("reviewValidationError")
         self.error.setWordWrap(True)
         self.error.setTextFormat(Qt.TextFormat.PlainText)
         self.error.hide()
-        layout.addWidget(self.error)
-        buttons = QDialogButtonBox()
-        buttons.addButton('Aplicar propuestas marcadas', QDialogButtonBox.ButtonRole.AcceptRole)
-        buttons.addButton('Cancelar', QDialogButtonBox.ButtonRole.RejectRole)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.layout().insertWidget(
+            self.layout().count() - 1, self.error
+        )
+        self.table.itemChanged.connect(self._item_changed)
 
     def _item_changed(self, item):
-        if item.column() in (3, 5):
+        if item.column() == 4:
             with QSignalBlocker(self.table):
-                self.table.item(item.row(), 0).setCheckState(Qt.CheckState.Checked)
-                self.table.item(item.row(), 6).setText('Propuesta editada manualmente.')
+                self.table.item(
+                    item.row(), 0
+                ).setCheckState(Qt.CheckState.Checked)
 
     def accept(self):
-        changes = {}
-        for row, key in enumerate(self._keys):
-            if self.table.item(row, 0).checkState() != Qt.CheckState.Checked:
-                continue
-            series = self.table.item(row, 5).text().strip()
-            if not series or len(series) > 255:
-                self.error.setText('La colección debe tener entre 1 y 255 caracteres.')
-                self.error.show()
-                return
-            try:
-                volume = normalize_volume(self.table.item(row, 3).text().strip())
-            except ValueError as error:
-                self.error.setText(str(error))
-                self.error.show()
-                return
-            fields = {'series': series, 'volume': volume}
-            fields = {name: value for name, value in fields.items()
-                      if value != (self._products[key].get(name) or None)}
-            if fields:
-                changes[key] = fields
-        self.changes = changes
-        super().accept()
+        try:
+            for row in range(self.table.rowCount()):
+                mark = self.table.item(row, 0)
+                if mark.checkState() != Qt.CheckState.Checked:
+                    continue
+
+                key, field = mark.data(Qt.ItemDataRole.UserRole)
+                text = self.table.item(row, 4).text().strip()
+
+                if field == "volume":
+                    value = normalize_volume(text)
+                    if value is None:
+                        raise ValueError(
+                            "Indica un tomo o rango como 1-4. "
+                            "Para descartarlo, desmarca la fila."
+                        )
+
+                elif field == "title":
+                    if not text or len(text.encode("utf-8")) > 65535:
+                        raise ValueError(
+                            "El título está vacío o es demasiado largo."
+                        )
+                    value = text
+
+                else:
+                    if not text or len(text) > 255:
+                        raise ValueError(
+                            "La colección debe tener entre "
+                            "1 y 255 caracteres."
+                        )
+                    value = text
+
+                self._rows[key]["changes"][field] = value
+                previous = self._rows[key]["product"].get(field)
+
+                if (
+                    _comparable(field, value)
+                    == _comparable(field, previous)
+                ):
+                    mark.setCheckState(Qt.CheckState.Unchecked)
+
+            super().accept()
+            self.changes = self.accepted_changes
+
+        except ValueError as error:
+            self.error.setText(str(error))
+            self.error.show()

@@ -1,6 +1,8 @@
+from yumekai_importer.ui.widgets.status_message import StatusMessage
+from yumekai_importer.ui.widgets.presentation import button_role, review_dialog_layout, style_button_box
 from datetime import datetime
 
-from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, Slot
+from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, Slot, QTimer
 from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QDialogButtonBox, QFileDialog,
@@ -15,7 +17,6 @@ from yumekai_importer.catalog.sd_review import sd_review_changes
 from yumekai_importer.catalog.suppliers import supplier_block_reason
 from yumekai_importer.catalog.change_selection import confirm_change_selection
 from yumekai_importer.diagnostics import logger
-from yumekai_importer.ui.widgets.diagnostics_menu import add_diagnostics_actions
 from yumekai_importer.catalog.classification import canonical_demographic
 from yumekai_importer.catalog.duplicate_titles import find_duplicate_titles
 from yumekai_importer.catalog.review_filters import matches_review_filters
@@ -24,6 +25,7 @@ from yumekai_importer.catalog.review_workflow import (
     STOCK_LABELS, readiness_issues, search_text, stock_code,
 )
 from yumekai_importer.storage.catalog_api import CatalogApi
+from yumekai_importer.storage.review_draft_backup import ReviewDraftBackup
 from yumekai_importer.storage.credentials import load_credentials
 from yumekai_importer.storage.woocommerce_csv import export_products
 from yumekai_importer.ui.widgets.product_review_dialog import ProductReviewDialog
@@ -34,8 +36,8 @@ from yumekai_importer.ui.widgets.duplicate_titles_dialog import DuplicateTitlesD
 from yumekai_importer.ui.widgets.title_review_dialog import TitleReviewDialog
 from yumekai_importer.ui.widgets.change_review_dialog import review_changes
 from yumekai_importer.ui.widgets.review_check_delegate import ReviewCheckDelegate
-from yumekai_importer.ui.widgets.tables import make_table, set_rows
-from yumekai_importer.ui.workers.load_pending_worker import LoadPendingWorker
+from yumekai_importer.ui.widgets.tables import make_table, set_rows, filter_table_rows
+from yumekai_importer.ui.workers.load_pending_worker import LoadPendingWorker, StoreLinkWorker
 from yumekai_importer.ui.workers.review_action_worker import ReviewActionWorker
 from yumekai_importer.ui.workers.sd_recheck_worker import SdRecheckWorker
 
@@ -80,6 +82,7 @@ class PendingReviewWindow(QWidget):
         super().__init__()
         self.setObjectName("pendingReviewWindow")
         self._worker = None
+        self._link_worker = None
         self._action_worker = None
         self._sd_worker = None
         self._sd_results = {}
@@ -90,11 +93,17 @@ class PendingReviewWindow(QWidget):
         self._backup_error = None
         self._selected = set()
         self._loaded = False
+        self._store_check_failed = False
         self._api_override = None
+
+        self._filter_timer = QTimer(self)
+        self._filter_timer.setSingleShot(True)
+        self._filter_timer.setInterval(200)
+        self._filter_timer.timeout.connect(self._apply_filter_rows)
 
         title = QLabel("Revisar pendientes")
         title.setObjectName("pageTitle")
-        self._tools_button = QPushButton("Herramientas")
+        self._tools_button = button_role(QPushButton("Organizar fichas"), "secondary")
         self._tools_button.setObjectName("reviewMenuButton")
         tools_menu = QMenu(self)
         self._tools_button.setMenu(tools_menu)
@@ -102,8 +111,21 @@ class PendingReviewWindow(QWidget):
         self._recover_drafts_action.triggered.connect(self._restore_draft_backup)
         tools_menu.addAction(self._recover_drafts_action)
         tools_menu.addSeparator()
-        self._refresh_button = QAction("Recargar datos", self)
-        self._refresh_button.triggered.connect(self._load_pending)
+        self._refresh_button = QPushButton("Actualizar lista", self)
+        self._refresh_button.clicked.connect(self._load_pending)
+        self._refresh_button.setToolTip("Vuelve a leer las dos listas guardadas en el importador.")
+        self._link_store_button = button_role(
+            QPushButton("Comprobar productos ya subidos", self),
+            "secondary",
+        )
+        self._link_store_button.setToolTip(
+            "Después de importar el CSV en WooCommerce, "
+            "comprueba las dos listas completas por ISBN. "
+            "Guarda antes los cambios pendientes."
+        )
+        self._link_store_button.clicked.connect(
+            self._link_imported_products
+        )
         self._duplicates_button = QAction("Ver duplicados (0)", self)
         self._duplicates_button.setToolTip("Compara títulos repetidos en ambas listas, aunque tengan distinto ISBN.")
         self._duplicates_button.triggered.connect(self._show_duplicates)
@@ -112,8 +134,7 @@ class PendingReviewWindow(QWidget):
         tools_menu.addAction(self._duplicates_button)
         tools_menu.addAction(self._title_button)
         tools_menu.addSeparator()
-        tools_menu.addAction(self._refresh_button)
-        add_diagnostics_actions(tools_menu, self)
+
         self._supplier_button = QPushButton("Recomprobar")
         self._supplier_button.setObjectName("reviewMenuButton")
         self._supplier_button.setToolTip("Consultar stock y completar datos por distribuidor")
@@ -147,6 +168,7 @@ class PendingReviewWindow(QWidget):
         header.addStretch()
         header.addWidget(self._tools_button)
         header.addWidget(self._supplier_button)
+        header.addWidget(self._refresh_button)
         header.addWidget(self._stop_sd_button)
 
         self._search = QLineEdit()
@@ -195,17 +217,19 @@ class PendingReviewWindow(QWidget):
         self._select_visible = QPushButton("Marcar visibles")
         self._select_visible.clicked.connect(self._toggle_visible)
         self._select_visible.setObjectName("clearButton")
-        self._save_button = QPushButton("Guardar cambios pendientes")
+        self._save_button = button_role(QPushButton("Guardar cambios pendientes"), "primary")
         self._save_button.clicked.connect(self._retry_drafts)
         self._selection_tools = QPushButton("Acciones de selección (0)")
         self._selection_tools.setObjectName("reviewMenuButton")
         selection_menu = QMenu(self)
         self._selection_tools.setMenu(selection_menu)
+        button_role(self._supplier_button, "soft")
+        button_role(self._clear_filters, "quiet")
         self._ready_button = QAction("Pasar a listas para subir", self)
         self._ready_button.triggered.connect(self._mark_ready)
         self._return_button = QAction("Devolver a revisión", self)
         self._return_button.triggered.connect(self._return_pending)
-        self._export_button = QPushButton("Generar CSV")
+        self._export_button = button_role(QPushButton("Generar CSV"), "primary")
         self._export_button.clicked.connect(self._export_csv)
         self._delete_button = QAction("Borrar selección…", self)
         self._delete_button.triggered.connect(self._delete_selected)
@@ -216,47 +240,16 @@ class PendingReviewWindow(QWidget):
         actions = QHBoxLayout()
         actions.addWidget(self._select_visible)
         actions.addWidget(self._selection_tools)
+        actions.addWidget(self._link_store_button)
         actions.addStretch()
         actions.addWidget(self._save_button)
         actions.addWidget(self._export_button)
 
-        # Contenedor de avisos
-        self._feedback_container = QWidget()
-        self._feedback_container.setObjectName("feedbackContainer")
-        self._feedback_container.setAttribute(
-            Qt.WidgetAttribute.WA_StyledBackground, True
-        )
+        self._feedback_container = StatusMessage()
+        self._feedback = self._feedback_container.label
+        self._feedback_icon = self._feedback_container.icon
+        self._feedback_close = self._feedback_container.close_button
 
-        # Icono
-        self._feedback_icon = QLabel()
-        self._feedback_icon.setFixedWidth(22)
-        self._feedback_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Mensaje
-        self._feedback = QLabel()
-        self._feedback.setTextFormat(Qt.TextFormat.PlainText)
-        self._feedback.setWordWrap(True)
-
-        # Botón para cerrar
-        self._feedback_close = QPushButton("×")
-        self._feedback_close.setFixedSize(24, 24)
-        self._feedback_close.setToolTip("Cerrar aviso")
-        self._feedback_close.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._feedback_close.clicked.connect(
-            self._feedback_container.hide
-        )
-
-        # Distribución horizontal
-        feedback_layout = QHBoxLayout(self._feedback_container)
-        feedback_layout.setContentsMargins(10, 4, 8, 4)
-        feedback_layout.setSpacing(8)
-
-        feedback_layout.addWidget(self._feedback_icon)
-        feedback_layout.addWidget(self._feedback, 1)
-        feedback_layout.addWidget(self._feedback_close)
-
-        self._feedback_container.hide()
-        
         help_label = QLabel("Doble clic para editar. El título y las casillas permanecen visibles al desplazarte.")
         help_label.setObjectName("reviewHint")
         help_label.setWordWrap(True)
@@ -298,7 +291,15 @@ class PendingReviewWindow(QWidget):
 
     @property
     def _busy(self):
-        return self._worker is not None or self._action_worker is not None or self._sd_worker is not None
+        return any(
+            worker is not None
+            for worker in (
+                self._worker,
+                self._link_worker,
+                self._action_worker,
+                self._sd_worker,
+            )
+        )
 
     def _api(self):
         if self._api_override is not None:
@@ -320,62 +321,7 @@ class PendingReviewWindow(QWidget):
     def _set_feedback(self, message, kind="info"):
         if message:
             logger.log(40 if kind == "error" else 20, "pending.feedback %s", message)
-        styles = {
-            "info": (
-                "#EFF6FF", "#24538C", "#C7DCF5", "ⓘ"
-            ),
-            "error": (
-                "#FEF2F2", "#991B1B", "#F2CCCC", "⚠"
-            ),
-            "success": (
-                "#F0FDF4", "#166534", "#BBE5C8", "✓"
-            ),
-        }
-
-        background, color, border, icon = styles.get(
-            kind, styles["info"]
-        )
-
-        self._feedback_container.setStyleSheet(
-            f"""
-            QWidget#feedbackContainer {{
-                background-color: {background};
-                border: 1px solid {border};
-                border-radius: 6px;
-            }}
-
-            QLabel {{
-                background: transparent;
-                border: none;
-                color: {color};
-                font-size: 13px;
-                font-weight: 500;
-                padding: 0px;
-            }}
-
-            QPushButton {{
-                background: transparent;
-                border: none;
-                border-radius: 4px;
-                color: {color};
-                font-size: 18px;
-                font-weight: 500;
-                padding: 0px;
-            }}
-
-            QPushButton:hover {{
-                background-color: {border};
-            }}
-            """
-        )
-
-        self._feedback_icon.setText(icon)
-        self._feedback_icon.setStyleSheet(
-            "font-size: 16px; font-weight: bold;"
-        )
-
-        self._feedback.setText(message)
-        self._feedback_container.setVisible(bool(message))
+        self._feedback_container.set_message(message, kind)
 
         if self._duplicates_dialog is not None:
             self._duplicates_dialog.set_feedback(message)
@@ -403,9 +349,31 @@ class PendingReviewWindow(QWidget):
         except (OSError, ValueError) as error:
             self._set_feedback(str(error), kind="error")
             return
+        if not self._loaded:
+            self._set_feedback('Pulsa Actualizar lista antes de recuperar la revisión, para leer las fichas guardadas.', kind='warning')
+            return
         if not saved or not saved["drafts"]:
             self._set_feedback("No hay una revisión local pendiente de recuperar.")
             return
+        current_keys = {key for rows in self._products.values() for key in rows}
+        skipped = set(saved['drafts']) - current_keys
+        if skipped:
+            # Keep the edits as a separate recovery file, without bringing shop products back into pending.
+            archive = ReviewDraftBackup(self._draft_backup.path.with_name('revisiones-fuera-de-pendientes.json'))
+            try:
+                archived = archive.load() or {'products': {}, 'drafts': {}, 'sd_results': {}}
+                for field in ('products', 'drafts', 'sd_results'):
+                    archived[field].update({key: value for key, value in saved[field].items() if key in skipped})
+                archive.save(archived['products'], archived['drafts'], archived['sd_results'])
+                for field in ('products', 'drafts', 'sd_results'):
+                    saved[field] = {key: value for key, value in saved[field].items() if key not in skipped}
+                if saved['drafts']:
+                    self._draft_backup.save(saved['products'], saved['drafts'], saved['sd_results'])
+                else:
+                    self._draft_backup.clear()
+            except (OSError, ValueError) as error:
+                self._set_feedback('No se pudo archivar la revisión que ya no está pendiente: ' + str(error), kind='error')
+                return
         # Preserve the original snapshots/revisions: recovery must not overwrite a newer server edit.
         for key in saved["drafts"]:
             for rows in self._products.values():
@@ -418,7 +386,8 @@ class PendingReviewWindow(QWidget):
         self._update_filter_options()
         self._reset_filters()
         self._set_feedback(f"Recuperados {len(self._drafts)} cambios de la copia local. "
-                           "Los datos nuevos que pudiera haber en el servidor se comprobarán al guardar.")
+                           + (f'{len(skipped)} revisiones ya no corresponden a fichas pendientes y se han conservado aparte. ' if skipped else '')
+                           + 'Los datos nuevos que pudiera haber en el servidor se comprobarán al guardar.')
 
     def _all_current_products(self):
         return {key: self._current_product(key) for rows in self._products.values() for key in rows}
@@ -441,11 +410,23 @@ class PendingReviewWindow(QWidget):
     def _visible_keys(self, status=None, *, include_incomplete=True):
         status = status or self._status
         criteria = self._advanced_filters.criteria()
+        query = self._search.text()
+        publisher = self._publisher_filter.currentData()
+        work_type = self._type_filter.currentData()
         incomplete = include_incomplete and self._incomplete_button.isChecked()
-        return [isbn for isbn in self._products[status]
-                if matches_review_filters(self._current_product(isbn), self._search.text(),
-                                          self._publisher_filter.currentData(), self._type_filter.currentData(),
-                                          criteria=criteria, incomplete_only=incomplete)]
+
+        return [
+            isbn
+            for isbn in self._products[status]
+            if matches_review_filters(
+                self._current_product(isbn),
+                query,
+                publisher,
+                work_type,
+                criteria=criteria,
+                incomplete_only=incomplete,
+            )
+        ]
 
     def _update_filter_options(self):
         products = [self._current_product(isbn) for rows in self._products.values() for isbn in rows]
@@ -464,9 +445,37 @@ class PendingReviewWindow(QWidget):
         self._advanced_filters.set_products(products)
 
     def _filters_changed(self, *_):
-        # Changing a filter clears checks so bulk actions never affect hidden rows.
         self._selected.clear()
-        self._fill_tables()
+
+        for name in (
+            "_tabs", "_selection_tools", "_select_visible",
+            "_tools_button", "_supplier_button", "_save_button",
+            "_export_button", "_ready_button", "_return_button",
+            "_delete_button", "_link_store_button",
+        ):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.setEnabled(False)
+
+        self._filter_timer.start()
+
+    def _apply_filter_rows(self):
+        self._filter_timer.stop()
+
+        for status, _ in REVIEW_TABS:
+            visible = set(self._visible_keys(status))
+            selected = self._selected if status == self._status else set()
+
+            if status == self._status:
+                self._selected.intersection_update(visible)
+
+            filter_table_rows(
+                self._tables[status],
+                visible,
+                selected,
+            )
+
+        self._update_actions()
 
     def _reset_filters(self):
         with QSignalBlocker(self._search), QSignalBlocker(self._publisher_filter), QSignalBlocker(self._type_filter), \
@@ -477,17 +486,19 @@ class PendingReviewWindow(QWidget):
             self._incomplete_button.setChecked(False)
         self._advanced_filters.clear(emit=False)
         self._more_filters.setChecked(False)
-        self._filters_changed()
+        self._selected.clear()
+        self._apply_filter_rows()
 
     def _tab_changed(self, *_):
         self._selected.clear()
-        self._fill_tables()
+        self._apply_filter_rows()
 
     def _fill_tables(self):
+        self._filter_timer.stop()
         self._selected.intersection_update(self._visible_keys())
         for status, label in REVIEW_TABS:
             table = self._tables[status]
-            keys = self._visible_keys(status)
+            keys = list(self._products[status])
             rows = []
             for isbn in keys:
                 product = self._current_product(isbn)
@@ -522,7 +533,7 @@ class PendingReviewWindow(QWidget):
         self._duplicates_button.setText(f"Ver duplicados ({len(find_duplicate_titles(products))})")
         if self._duplicates_dialog is not None:
             self._duplicates_dialog.set_products(products, self._drafts)
-        self._update_actions()
+        self._apply_filter_rows()
 
     def _selection_changed(self, item):
         if item.column() != 0:
@@ -543,7 +554,7 @@ class PendingReviewWindow(QWidget):
             self._selected.difference_update(keys)
         else:
             self._selected.update(keys)
-        self._fill_tables()
+        self._apply_filter_rows()
         logger.info("pending.mark_visible selected=%s", len(self._selected))
 
     def _update_actions(self):
@@ -564,6 +575,7 @@ class PendingReviewWindow(QWidget):
         self._selection_tools.setText(f"Acciones de selección ({count})")
         self._selection_tools.setEnabled(bool(count) and not self._busy)
         self._tools_button.setEnabled(not self._busy)
+        self._recover_drafts_action.setVisible(not self._drafts and self._draft_backup is not None and self._draft_backup.exists())
         self._recover_drafts_action.setEnabled(not self._busy and not self._drafts
             and self._draft_backup is not None and self._draft_backup.exists())
         self._title_button.setEnabled(bool(count) and not self._busy)
@@ -590,6 +602,9 @@ class PendingReviewWindow(QWidget):
         self._export_button.setEnabled(bool(visible) and not self._busy and not self._drafts)
         self._save_button.setEnabled(bool(self._drafts) and not self._busy)
         self._refresh_button.setEnabled(not self._busy)
+        self._link_store_button.setEnabled(
+            self._loaded and not self._busy and not self._drafts
+        )
         self._duplicates_button.setEnabled(not self._busy)
         if self._duplicates_dialog is not None:
             self._duplicates_dialog.set_busy(self._busy, has_drafts=bool(self._drafts))
@@ -617,34 +632,163 @@ class PendingReviewWindow(QWidget):
     def _load_pending(self):
         if self._busy or not self._confirm_discard():
             return
+
         api = self._api()
         if api is None:
             return
+
         self._worker = LoadPendingWorker(api, self)
         self._worker.discard_drafts = bool(self._drafts)
+        self._worker.stage.connect(self._set_feedback)
         self._worker.finished.connect(self._finish_load)
+
+        self._set_feedback("Cargando las fichas del importador…")
         self._update_actions()
-        self._set_feedback("Cargando fichas…")
         self._worker.start()
 
     def _finish_load(self):
-        worker = self._worker
-        self._worker = None
+        worker, self._worker = self._worker, None
+
         if worker.error is not None:
-            self._set_feedback(f"No se pudieron cargar las fichas. {worker.error}", kind="error")
+            self._set_feedback(
+                "No se pudieron leer las fichas. "
+                "Se conserva la lista anterior. "
+                + worker.error,
+                kind="error",
+            )
         else:
-            self._products = {status: {str(row["isbn"]): row for row in worker.products_by_status[status]}
-                              for status, _ in REVIEW_TABS}
+            self._products = {
+                status: {
+                    str(row["isbn"]): row
+                    for row in worker.products_by_status[status]
+                }
+                for status, _ in REVIEW_TABS
+            }
+
             self._drafts.clear()
             self._sd_results.clear()
             self._selected.clear()
-            self._checkpoint_drafts(clear_when_empty=getattr(worker, 'discard_drafts', False))
+            self._store_check_failed = False
             self._loaded = True
+
+            self._checkpoint_drafts(
+                clear_when_empty=getattr(
+                    worker, "discard_drafts", False
+                )
+            )
             self._update_filter_options()
             self._fill_tables()
-            self._set_feedback("")
+
+            total = sum(
+                len(rows) for rows in self._products.values()
+            )
+            self._set_feedback(
+                f"{total} ficha(s) cargadas del importador.",
+                kind="success",
+            )
+
         worker.deleteLater()
         self._update_actions()
+
+    @Slot()
+    def _link_imported_products(self):
+        if self._busy or not self._loaded:
+            return
+
+        if self._drafts:
+            self._set_feedback(
+                "Guarda los cambios pendientes "
+                "antes de comprobar la tienda.",
+                kind="warning",
+            )
+            return
+
+        api = self._api()
+        if api is None:
+            return
+
+        isbns = [
+            isbn
+            for rows in self._products.values()
+            for isbn in rows
+        ]
+
+        self._link_worker = StoreLinkWorker(api, isbns, self)
+        self._link_worker.stage.connect(self._set_feedback)
+        self._link_worker.finished.connect(
+            self._finish_link_imported
+        )
+
+        self._set_feedback("Comprobando productos ya subidos…")
+        self._update_actions()
+        self._link_worker.start()
+
+    def _finish_link_imported(self):
+        worker, self._link_worker = self._link_worker, None
+        confirmed = {
+            row["isbn"] for row in worker.confirmed
+        }
+
+        if confirmed:
+            for isbn in confirmed:
+                for rows in self._products.values():
+                    rows.pop(isbn, None)
+
+                self._selected.discard(isbn)
+                self._sd_results.pop(isbn, None)
+
+            self._update_filter_options()
+            self._fill_tables()
+
+        remaining = sum(
+            len(rows) for rows in self._products.values()
+        )
+
+        message = (
+            f"{len(confirmed)} ficha(s) retiradas de las listas "
+            f"con vínculo confirmado. "
+            f"{remaining} siguen en preparación."
+        )
+
+        if worker.error:
+            self._set_feedback(
+                message
+                + " No se pudo completar la comprobación. "
+                + worker.error
+                + " Pulsa Actualizar lista antes de reintentar.",
+                kind="error",
+            )
+        elif worker.conflicts:
+            self._set_feedback(
+                message
+                + " Se conservan las coincidencias ambiguas: "
+                + ", ".join(worker.conflicts[:6])
+                + ("…" if len(worker.conflicts) > 6 else ""),
+                kind="warning",
+            )
+        else:
+            self._set_feedback(message, kind="success")
+
+        worker.deleteLater()
+        self._update_actions()
+
+    def _apply_pending_snapshot(self, products_by_status, *, discard_drafts=False):
+        self._products = {status: {str(row['isbn']): row for row in products_by_status[status]}
+                          for status, _ in REVIEW_TABS}
+        self._drafts.clear()
+        self._sd_results.clear()
+        self._selected.clear()
+        self._checkpoint_drafts(clear_when_empty=discard_drafts)
+        self._loaded = True
+        self._update_filter_options()
+        self._fill_tables()
+
+    def _show_initial_pending(self, products_by_status):
+        if self._worker is None:
+            return
+        self._store_check_failed = True  # No export before the shop check has completed.
+        self._apply_pending_snapshot(products_by_status,
+                                     discard_drafts=getattr(self._worker, 'discard_drafts', False))
 
     def _entry(self, original, *, include_draft=True):
         previous = self._products[self._status].get(original)
@@ -772,11 +916,19 @@ class PendingReviewWindow(QWidget):
         products = {key: self._current_product(key) for key in self._visible_keys() if key in self._selected}
         titles = [str(product.get("title") or "") for rows in self._products.values() for product in rows.values()]
         dialog = TitleReviewDialog(products, self, known_titles=titles)
+        if dialog.table.rowCount() == 0:
+            dialog.deleteLater()
+            self._set_feedback(
+                "No hay cambios que proponer en las fichas seleccionadas.",
+                kind="success",
+            )
+            return
         result = dialog.exec()
         proposals = dialog.changes
         dialog.deleteLater()
         if result != QDialog.DialogCode.Accepted:
             return
+        self._selected.difference_update(products)
         for key, changes in proposals.items():
             draft = self._drafts.setdefault(key, {"changes": {},
                 "ready_to_upload": products[key].get("review_status") == "ready_to_upload"})
@@ -786,7 +938,12 @@ class PendingReviewWindow(QWidget):
         self._set_feedback(f"Colección/tomo: cambios propuestos en {len(proposals)} ficha(s). "
                            "Revisa los campos que quieres guardar.")
         if proposals:
-            self._retry_drafts(keys=proposals)
+            entries = []
+            for key, changes in proposals.items():
+                entry = self._entry(key)
+                entry['changes'] = dict(changes)
+                entries.append(entry)
+            self._start_action('save', entries)
 
     def _recheck_sd(self, *, stock_only=False):
         if self._sd_worker is not None:
@@ -894,7 +1051,7 @@ class PendingReviewWindow(QWidget):
         available = screen.availableGeometry() if screen is not None else None
         dialog.resize(min(1180, available.width() - 40) if available else 1100,
                       min(650, available.height() - 60) if available else 600)
-        layout = QVBoxLayout(dialog)
+        layout = review_dialog_layout(dialog)
         message = QLabel("La consulta completa datos vacíos y propone cambios de formato y disponibilidad según SD. "
                          "Pulsa Guardar cambios pendientes en la pantalla anterior para conservarlos.")
         message.setWordWrap(True)
@@ -908,6 +1065,7 @@ class PendingReviewWindow(QWidget):
         buttons = QDialogButtonBox()
         buttons.addButton("Cerrar", QDialogButtonBox.ButtonRole.RejectRole)
         buttons.rejected.connect(dialog.reject)
+        style_button_box(buttons)
         layout.addWidget(buttons)
         dialog.exec()
         dialog.deleteLater()
@@ -1080,6 +1238,11 @@ class PendingReviewWindow(QWidget):
             if result != QDialog.DialogCode.Accepted:
                 return
         dialog = CsvExportDialog(len(keys), bool(self._selected), self)
+        if self._store_check_failed:
+            notice = StatusMessage(dialog)
+            notice.set_message('No se ha podido comprobar qué fichas ya existen en WooCommerce. '
+                               'Puedes generar el CSV, pero revisa las coincidencias antes de importarlo en la tienda.', 'warning')
+            dialog.layout().insertWidget(1, notice)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             dialog.deleteLater()
             return

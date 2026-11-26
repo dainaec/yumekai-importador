@@ -1,3 +1,4 @@
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
 from yumekai_importer.ui.widgets.tables import make_table, set_rows
@@ -12,7 +13,7 @@ class ExportReviewDialog(QDialog):
         available = screen.availableGeometry() if screen is not None else None
         self.resize(min(1180, available.width() - 40) if available else 1000,
                     min(650, available.height() - 60) if available else 550)
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         message = (f"{len(review)} de {total} fichas tienen datos pendientes o por comprobar. "
                    "Puedes devolver esas fichas a revisión o generar el CSV con los datos disponibles.\n"
                    "Los códigos se conservan completos aunque no cumplan el estándar ISBN-13. Los precios que faltan o no se pueden "
@@ -40,6 +41,7 @@ class ExportReviewDialog(QDialog):
         cancel.setDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        style_button_box(buttons)
         layout.addWidget(buttons)
 
     def _return_pending(self):

@@ -40,7 +40,12 @@ class SdRecheckWorker(QThread):
                         if entry is None:
                             break
                         key, product = entry
-                        pending[executor.submit(lookup_sd_isbn, str(product.get('isbn') or ''), self.stop_requested)] = key
+                        pending[executor.submit(
+                            lookup_sd_isbn,
+                            str(product.get("isbn") or ""),
+                            self.stop_requested,
+                            title=str(product.get("title") or ""),
+                        )] = key
                     if not pending:
                         break
                     done, _ = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)

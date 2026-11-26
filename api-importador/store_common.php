@@ -1,5 +1,10 @@
 <?php
 declare(strict_types=1);
+// These API requests must read WordPress/WooCommerce without persistent cache snapshots.
+// Defined before wp-load.php so W3 Total Cache drop-ins see them too.
+foreach (['DONOTCACHEPAGE', 'DONOTCACHEOBJECT', 'DONOTCACHEDB'] as $cacheConstant) {
+    if (!defined($cacheConstant)) { define($cacheConstant, true); }
+}
 require_once __DIR__ . '/review_common.php';
 
 const STORE_META_FIELDS = [
@@ -23,13 +28,101 @@ function store_prime_products(array $ids): void
         $image = (int) get_post_meta($id, '_thumbnail_id', true);
         if ($image > 0) { $images[] = $image; }
     }
-    if ($images !== []) { update_meta_cache('post', array_values(array_unique($images))); }
+    if ($images !== []) {
+        $images = array_values(array_unique($images));
+        $attachments = get_posts(['post_type' => 'attachment', 'post_status' => ['inherit', 'private', 'publish'],
+            'post__in' => $images, 'posts_per_page' => count($images), 'no_found_rows' => true,
+            'update_post_meta_cache' => true, 'update_post_term_cache' => false]);
+        update_post_caches($attachments, 'attachment', false, true);
+        update_meta_cache('post', $images);
+    }
+}
+
+function store_work_type($value): ?string
+{
+    $key = strtolower(trim((string) $value));
+    return ['manga' => 'Manga', 'manhwa' => 'Manhwa', 'manwha' => 'Manhwa',
+        'manhua' => 'Manhua'][$key] ?? null;
+}
+
+/** Product categories are the current shop classification; _yk_item_kind is a fallback. */
+function store_category_info(array $ids, $fallback): array
+{
+    $names = $typedTerms = $ancestors = [];
+    $demographics = [];
+    foreach ($ids as $id) {
+        $term = get_term($id, 'product_cat');
+        if (!$term || is_wp_error($term)) {
+            throw new ReviewRequestError('No se pudieron leer las categorías actuales de una ficha. Vuelve a cargar la tienda.', 503);
+        }
+        $names[] = $term->name;
+        $path = array_merge([(int) $id], array_map('intval', get_ancestors($id, 'product_cat', 'taxonomy')));
+        foreach ($path as $pathId) {
+            $parent = $pathId === (int) $id ? $term : get_term($pathId, 'product_cat');
+            if (!$parent || is_wp_error($parent)) {
+                throw new ReviewRequestError('No se pudo leer la jerarquía de categorías de una ficha.', 503);
+            }
+            $type = store_work_type($parent->slug ?? '') ?? store_work_type($parent->name);
+            if ($type !== null) {
+                $typedTerms[$pathId] = $type;
+                $ancestors[$pathId] = array_map('intval', get_ancestors($pathId, 'product_cat', 'taxonomy'));
+            }
+            $demographic = review_demographic($parent->name);
+            if (in_array($demographic, ['Shonen', 'Shōjo', 'Seinen', 'Josei', 'Kodomo', 'Yaoi / BL', 'Yuri', 'Artbooks, guías y novelas'], true)) {
+                $demographics[$demographic] = true;
+            }
+        }
+    }
+    // If Manhwa is nested below Manga, use the more specific classification.
+    foreach ($ancestors as $child => $parents) {
+        foreach ($parents as $parent) {
+            if (isset($typedTerms[$child], $typedTerms[$parent]) && $typedTerms[$child] !== $typedTerms[$parent]) {
+                unset($typedTerms[$parent]);
+            }
+        }
+    }
+    $types = array_values(array_unique(array_values($typedTerms)));
+    sort($types, SORT_STRING);
+    $type = count($types) === 1 ? $types[0] : (count($types) === 0 ? store_work_type($fallback) : null);
+    return ['categories' => $names, 'work_type' => $type,
+        'demographic' => $type === 'Manga' && count($demographics) === 1 ? array_key_first($demographics) : null,
+        'category_issue' => count($types) > 1 ? 'Las categorías mezclan tipos de obra: ' . implode(', ', $types)
+            . '. Revisa las categorías en WooCommerce.' : null];
+}
+
+/** Use a real shop identifier; never match editions by title. */
+function store_identifier(int $id, string $sku): array
+{
+    $isbn = trim((string) get_post_meta($id, '_yk_isbn', true));
+    if ($isbn !== '') { return ['isbn' => $isbn, 'identifier_source' => '_yk_isbn']; }
+    $gtin = trim((string) get_post_meta($id, '_global_unique_id', true));
+    if (preg_match('/\A[0-9]{13}\z/', $gtin) === 1) { return ['isbn' => $gtin, 'identifier_source' => '_global_unique_id']; }
+    if (preg_match('/\AYMK-(.+)\z/iu', $sku, $match) === 1 && product_code_valid($match[1])) {
+        return ['isbn' => $match[1], 'identifier_source' => '_sku'];
+    }
+    return ['isbn' => '', 'identifier_source' => null];
+}
+
+/** Preserve the canonical link of a previously published draft without writing a post. */
+function store_product_url($product): string
+{
+    if ($product->get_status('edit') !== 'publish' && function_exists('get_post') && function_exists('get_permalink')) {
+        $post = get_post($product->get_id());
+        if ($post && (string) ($post->post_name ?? '') !== '') {
+            $sample = clone $post;
+            $sample->post_status = 'publish';
+            $url = get_permalink($sample);
+            if (is_string($url) && $url !== '') { return $url; }
+        }
+    }
+    return (string) $product->get_permalink();
 }
 
 function store_snapshot($product): array
 {
     $row = [
-        'woocommerce_id' => $product->get_id(), 'isbn' => (string) $product->get_meta('_yk_isbn', true, 'edit'),
+        'woocommerce_id' => $product->get_id(), 'isbn' => (string) get_post_meta($product->get_id(), '_yk_isbn', true),
+        'product_url' => store_product_url($product),
         'title' => $product->get_name('edit'), 'description' => $product->get_description('edit'),
         'short_description' => $product->get_short_description('edit'),
         'retail_price' => $product->get_regular_price('edit') === '' ? null : $product->get_regular_price('edit'),
@@ -38,30 +131,27 @@ function store_snapshot($product): array
         'manage_stock' => $product->get_manage_stock('edit'), 'stock_quantity' => $product->get_stock_quantity('edit'),
         'backorders' => $product->get_backorders('edit'), 'product_type' => $product->get_type(),
         'publication_status' => $product->get_status('edit'), 'is_featured' => (int) $product->get_featured('edit'),
+        'tax_class' => $product->get_tax_class('edit'), 'tax_status' => $product->get_tax_status('edit'),
+        'active_price' => $product->get_price('edit'),
+        'image_id' => (int) $product->get_image_id('edit'),
         'review_status' => 'in_store', 'updated_at' => get_post_field('post_modified_gmt', $product->get_id()),
     ];
+    $row = array_replace($row, store_identifier($product->get_id(), $row['sku']));
     foreach (STORE_META_FIELDS as $field => $meta) {
-        $row[$field] = (string) $product->get_meta($meta, true, 'edit');
+        $row[$field] = (string) get_post_meta($product->get_id(), $meta, true);
     }
-    $row['work_type'] = ['manga' => 'Manga', 'manhwa' => 'Manhwa', 'manwha' => 'Manhwa',
-        'manhua' => 'Manhua'][$row['work_type']] ?? $row['work_type'];
     $ids = array_map('intval', $product->get_category_ids('edit'));
     sort($ids, SORT_NUMERIC);
     $row['category_ids'] = $ids;
-    $row['categories'] = [];
-    $row['demographic'] = null;
-    foreach ($ids as $id) {
-        $term = get_term($id, 'product_cat');
-        if ($term && !is_wp_error($term)) {
-            $row['categories'][] = $term->name;
-            $demographic = review_demographic($term->name);
-            if (in_array($demographic, ['Shonen', 'Shōjo', 'Seinen', 'Josei', 'Kodomo', 'Yaoi / BL', 'Yuri', 'Artbooks, guías y novelas'], true)) {
-                $row['demographic'] = $demographic;
-            }
-        }
-    }
+    $row = array_replace($row, store_category_info($ids, $row['work_type']));
     $image = wp_get_attachment_url($product->get_image_id('edit'));
     $row['image_url'] = $image ?: null;
+    // Keep plugin metadata and WooCommerce attributes available for diagnosis and conflict detection.
+    $row['meta_data'] = get_post_meta($product->get_id());
+    $row['attributes'] = [];
+    foreach ($product->get_attributes('edit') as $attribute) {
+        $row['attributes'][] = $attribute->get_data();
+    }
     $row['_store_revision'] = hash('sha256', json_encode($row, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
     return $row;
 }

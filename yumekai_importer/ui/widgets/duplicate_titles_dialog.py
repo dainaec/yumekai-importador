@@ -1,3 +1,4 @@
+from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style_button_box, button_role
 from PySide6.QtCore import QModelIndex, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QBrush, QCloseEvent, QColor
 from PySide6.QtWidgets import (
@@ -37,7 +38,7 @@ class DuplicateTitlesDialog(QDialog):
         self.resize(min(1450, available.width() - 40) if available else 1200,
                     min(780, available.height() - 60) if available else 650)
 
-        layout = QVBoxLayout(self)
+        layout = review_dialog_layout(self)
         description = QLabel("Coincidencias por título completo, aunque el ISBN sea distinto. "
                              "Se comparan Por revisar y Listas para subir, sin los filtros de la pantalla anterior. "
                              "Compara los datos para decidir qué fichas conservar.")
@@ -57,9 +58,9 @@ class DuplicateTitlesDialog(QDialog):
         self._select_button = QPushButton("Marcar todas")
         self._select_button.setObjectName("clearButton")
         self._select_button.clicked.connect(self._toggle_visible)
-        self._edit_button = QPushButton("Editar fila actual")
+        self._edit_button = button_role(QPushButton("Editar fila actual"), "secondary")
         self._edit_button.clicked.connect(self._edit_current)
-        self._save_button = QPushButton("Guardar cambios pendientes")
+        self._save_button = button_role(QPushButton("Guardar cambios pendientes"), "primary")
         self._save_button.clicked.connect(self.saveRequested.emit)
         self._delete_button = QPushButton("Borrar selección (0)")
         self._delete_button.setObjectName("deleteReviewButton")
@@ -91,7 +92,7 @@ class DuplicateTitlesDialog(QDialog):
         self._feedback.setTextFormat(Qt.TextFormat.PlainText)
         self._feedback.hide()
         layout.addWidget(self._feedback)
-        self._close_button = QPushButton("Cerrar")
+        self._close_button = button_role(QPushButton("Cerrar"))
         self._close_button.clicked.connect(self.reject)
         footer = QHBoxLayout()
         footer.addStretch()
