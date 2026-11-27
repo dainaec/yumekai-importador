@@ -2,6 +2,8 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QWidget
 
+from yumekai_importer.ui.styles.theme_switcher import set_theme_stylesheet
+
 
 class StatusMessage(QWidget):
     COLORS = {
@@ -37,7 +39,7 @@ class StatusMessage(QWidget):
 
     def set_message(self, message, kind='info'):
         background, text, border, glyph = self.COLORS.get(kind, self.COLORS['info'])
-        self.setStyleSheet(f'''
+        set_theme_stylesheet(self, f'''
             QWidget#feedbackContainer {{ background: {background}; border: 1px solid {border}; border-radius: 7px; }}
             QLabel {{ background: transparent; color: {text}; border: 0; padding: 0; }}
             QToolButton {{ background: transparent; color: {text}; border: 0; border-radius: 4px; font-size: 18px; }}

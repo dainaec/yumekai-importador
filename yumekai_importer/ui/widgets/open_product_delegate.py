@@ -2,8 +2,10 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QApplication, QStyle, QStyledItemDelegate, QStyleOptionViewItem
 
+from yumekai_importer.ui.widgets.themed_item_delegate import ThemedItemDelegate
 
-class OpenProductDelegate(QStyledItemDelegate):
+
+class OpenProductDelegate(ThemedItemDelegate):
     def paint(self, painter, option, index) -> None:
         cell = QStyleOptionViewItem(option)
         self.initStyleOption(cell, index)

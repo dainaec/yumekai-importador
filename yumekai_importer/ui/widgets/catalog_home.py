@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from yumekai_importer.ui.styles.theme_switcher import set_theme_stylesheet
 from yumekai_importer.version import APP_VERSION
 from yumekai_importer.ui.styles.application_icon import assets_directory
 from yumekai_importer.ui.widgets.presentation import button_role
@@ -80,7 +81,7 @@ class CatalogHome(QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.setStyleSheet(HOME_STYLE)
+        set_theme_stylesheet(self, HOME_STYLE)
 
         canvas = QWidget()
         canvas.setObjectName("homeCanvas")
@@ -104,6 +105,8 @@ class CatalogHome(QScrollArea):
         self._brand.setSpacing(36)
 
         self._logo = QSvgWidget(str(assets_directory() / "logo-yumekai.svg"))
+        self._logo.setObjectName("homeBrandLogo")
+        self._logo.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._logo.setFixedSize(190, 172)
         self._logo.renderer().setAspectRatioMode(Qt.AspectRatioMode.KeepAspectRatio)
         self._brand.addWidget(self._logo, 0, Qt.AlignmentFlag.AlignCenter)

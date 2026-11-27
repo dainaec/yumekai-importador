@@ -1,5 +1,5 @@
 import re
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from yumekai_importer.catalog.classification import canonical_demographic
 
 
@@ -11,6 +11,7 @@ ISBN_INPUT = r"[^\x00-\x1f\x7f]{0,128}"
 BOOK_FORMATS = (
     "Rústica",
     "Rústica con sobrecubierta",
+    "Rústica con solapas",
     "Tapa dura",
     "Box set",
     "Edición especial",
@@ -80,6 +81,25 @@ def sale_price_preview(price: object) -> str | None:
         return None
     discounted = Decimal(str(price)) * Decimal("0.95")
     return str(discounted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def supplier_price_changes(product, price):
+    """Compare a confirmed positive PVP and its agreed 5% discount."""
+    try:
+        candidate = normalize_price(str(price or "").strip())
+    except ValueError:
+        return {}
+    if candidate is None or Decimal(candidate) <= 0:
+        return {}
+    changes = {}
+    for field, value in (("retail_price", candidate), ("sale_price", sale_price_preview(candidate))):
+        try:
+            same = Decimal(str(product.get(field)).replace(",", ".")) == Decimal(value)
+        except (InvalidOperation, ValueError, TypeError):
+            same = False
+        if not same:
+            changes[field] = value
+    return changes
 
 
 def review_categories(work_type: str | None, demographic: str | None) -> list[str]:

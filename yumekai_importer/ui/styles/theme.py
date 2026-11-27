@@ -38,3 +38,9 @@ def apply_light_theme(app) -> None:
     app.setStyleSheet(stylesheet)
     from yumekai_importer.ui.widgets.presentation import install_dialog_presentation
     install_dialog_presentation(app)
+
+
+
+
+    from yumekai_importer.ui.styles.theme_switcher import theme_manager
+    theme_manager(app)

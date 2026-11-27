@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from yumekai_importer.ui.styles.theme_switcher import ThemeToggleButton
 from yumekai_importer.storage.review_draft_backup import ReviewDraftBackup
 from yumekai_importer.ui.widgets.catalog_home import CatalogHome
 from yumekai_importer.ui.windows.import_window import ImportWindow
@@ -84,6 +85,8 @@ class CatalogWindow(QWidget):
 
         nav_layout.addWidget(back_button)
         nav_layout.addStretch()
+        self._theme_button = ThemeToggleButton(self)
+        nav_layout.addWidget(self._theme_button)
         support = QPushButton("Ayuda y registros")
         support.setObjectName("reviewMenuButton")
         support_menu = QMenu(self)

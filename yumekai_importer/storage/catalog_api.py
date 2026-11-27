@@ -64,6 +64,7 @@ class CatalogApi:
         self._products_url = f"{base_url.rstrip('/')}/products.php"
         self._create_product_url = f"{base_url.rstrip('/')}/create_product.php"
         self._review_url = f"{base_url.rstrip('/')}/review_products.php"
+        self._manual_completion_url = f"{base_url.rstrip('/')}/manual_completion.php"
         self._sync_store_url = f"{base_url.rstrip('/')}/sync_store.php"
         self._store_catalog_url = f"{base_url.rstrip('/')}/store_catalog.php"
         self._store_products_url = f"{base_url.rstrip('/')}/store_products.php"
@@ -220,6 +221,32 @@ class CatalogApi:
             seen.add(original)
         if seen != set(expected):
             raise ValueError("Respuesta incompleta. Recarga para comprobar el resultado.")
+        return body
+
+    def list_manual_completion(self):
+        response = self._request("GET", self._manual_completion_url, auth=self._auth, timeout=(5, 60))
+        self._check_response(response, "manual_completion.php")
+        body = response.json()
+        isbns = body.get("complete_isbns") if isinstance(body, dict) else None
+        if not isinstance(isbns, list) or any(not isinstance(isbn, str) or not isbn for isbn in isbns):
+            raise ValueError("No se pudieron leer las marcas de ficha completa. Actualiza la lista.")
+        return set(isbns)
+
+    def set_manual_completion(self, isbns, complete):
+        isbns = list(isbns)
+        if type(complete) is not bool or not isbns or len(isbns) > 5000 or any(
+            not isinstance(isbn, str) or not isbn for isbn in isbns
+        ) or len(set(isbns)) != len(isbns):
+            raise ValueError("Selecciona las fichas cuya marca quieres cambiar.")
+        response = self._request("POST", self._manual_completion_url, auth=self._auth,
+                                 json={"isbns": isbns, "complete": complete}, timeout=(5, 60))
+        self._check_response(response, "manual_completion.php")
+        body = response.json()
+        received = body.get("isbns") if isinstance(body, dict) else None
+        if (not isinstance(body, dict) or body.get("complete") is not complete
+                or not isinstance(received, list) or any(not isinstance(isbn, str) for isbn in received)
+                or len(received) != len(isbns) or set(received) != set(isbns)):
+            raise ValueError("No se pudo confirmar la marca de ficha completa. Actualiza la lista para comprobarla.")
         return body
 
     def create_products(self, products: list[Product], *, approved_exceptions=frozenset()) -> dict[str, int]:

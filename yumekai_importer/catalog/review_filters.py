@@ -2,7 +2,8 @@
 from decimal import Decimal, InvalidOperation
 
 from yumekai_importer.catalog.classification import canonical_demographic
-from yumekai_importer.catalog.review_quality import completeness_issues, empty_data
+from yumekai_importer.catalog.review_quality import empty_data
+from yumekai_importer.catalog.manual_completion import manually_complete, pending_data_issues
 from yumekai_importer.catalog.review_workflow import readiness_issues, search_text, stock_code
 
 
@@ -100,10 +101,12 @@ def matches_review_filters(product: dict, query="", publisher=None, work_type=No
         if (minimum is not None and end < minimum) or (maximum is not None and start > maximum):
             return False
     quality = criteria.get("quality")
-    if quality == "blocking" and not readiness_issues(product):
+    if quality == "blocking" and (manually_complete(product) or not readiness_issues(product)):
         return False
-    if quality == "complete" and completeness_issues(product):
+    if quality == "manual_complete" and not manually_complete(product):
         return False
-    if incomplete_only and not completeness_issues(product):
+    if quality == "complete" and pending_data_issues(product):
+        return False
+    if incomplete_only and not pending_data_issues(product):
         return False
     return True

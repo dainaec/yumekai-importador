@@ -14,6 +14,25 @@ _CLASSIFICATION_KEYS = frozenset(classification_key(value) for value in (
 _EMPTY_FORMAT_KEYS = {"", "n d", "n a", "s d", "sin datos", "sin formato", "por completar"}
 
 
+def normalize_yumekai_format(value: str | None) -> str | None:
+    """Translate the agreed Norma binding labels to Yumekai's formats."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    formats = {
+        "rus sobrec": "Rústica con sobrecubierta",
+        "rustica sobrecub": "Rústica con sobrecubierta",
+        "rustica con sobrecub": "Rústica con sobrecubierta",
+        "rustica 2 sobrecub": "Rústica con sobrecubierta",
+        "rustica con sobrecubiertas": "Rústica con sobrecubierta",
+        "rustica con sobrecubierta": "Rústica con sobrecubierta",
+        "rustica con solapas": "Rústica con solapas",
+        "rustica solapas": "Rústica con solapas",
+        "cartone": "Tapa dura",
+    }
+    return formats.get(classification_key(text), text or None)
+
+
 def normalize_sd_format(value: str | None) -> str:
     text = (value or "").strip()
     folded = unicodedata.normalize("NFKD", text).casefold()

@@ -1,7 +1,7 @@
-from contextlib import closing
+"""SD's Excel configuration and legacy entry point for the shared reader."""
 from pathlib import Path
 from urllib.parse import quote
-from openpyxl import load_workbook
+from yumekai_importer.importers.excel_profile import ExcelProfile
 from yumekai_importer.importers.import_result import ImportResult
 
 
@@ -18,34 +18,18 @@ def _sd_image_url(value: object) -> str | None:
 
     return SD_IMAGE_BASE + quote(filename, safe="")
 
+def _read_image(value: object) -> tuple[str | None, str | None]:
+    return _sd_image_url(value), None
+
+
+SD_PROFILE = ExcelProfile(
+    code="sd", name="SD Distribuciones", distributor_aliases=("SD",),
+    distributor_prefixes=("SDDISTRIBUCIONES",), read_image=_read_image,
+    strip_details=False, reference_field="REF", legacy_default=True,
+)
+
+
 def read_sd_excel(path: str | Path) -> ImportResult:
-    result = ImportResult()
-
-    with closing(load_workbook(path, read_only=True, data_only=True)) as book:
-        rows = book.active.iter_rows(values_only=True)
-        headers = tuple(str(value or "").strip() for value in next(rows, ()))
-        missing = {"ISBN", "Titulo", "PVP"} - set(headers)
-        if missing:
-            raise ValueError(f"Faltan columnas de SD: {', '.join(sorted(missing))}")
-
-        for row_number, row in enumerate(rows, start=2):
-            if all(value is None or value == "" for value in row):
-                continue
-
-            data = dict(zip(headers, row))
-            
-            result.add_row(
-                row_number,
-                isbn_value=data["ISBN"],
-                title_value=data["Titulo"],
-                price_value=data["PVP"],
-                author=data.get("Autor"),
-                publisher=data.get("Editorial"),
-                description=data.get("Sinopsis"),
-                sd_reference=data.get("Ref"),
-                image_url=_sd_image_url(data.get("Imagen")),
-                source_data=data,
-            )
-
-    result.finalize_title_inferences()
-    return result
+    """Compatibility entry point; workbook reading is shared with other suppliers."""
+    from yumekai_importer.importers.catalog_excel import read_catalog_excel
+    return read_catalog_excel(path, supplier="sd")

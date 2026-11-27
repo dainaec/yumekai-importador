@@ -13,6 +13,8 @@ class LoadPendingWorker(QThread):
         self._api = api
         self.products_by_status = {}
         self.error = None
+        self.manual_complete_isbns = None
+        self.completion_error = None
 
     def run(self):
         try:
@@ -24,6 +26,12 @@ class LoadPendingWorker(QThread):
         except Exception as error:
             logger.exception("pending.load_failed")
             self.error = str(error)
+            return
+        try:
+            self.manual_complete_isbns = self._api.list_manual_completion()
+        except Exception as error:
+            logger.exception("pending.manual_completion_load_failed")
+            self.completion_error = str(error)
 
 
 class StoreLinkWorker(QThread):

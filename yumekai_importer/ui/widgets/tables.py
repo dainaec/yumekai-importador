@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QSignalBlocker, Qt
 
 from yumekai_importer.ui.widgets.frozen_title_table import FrozenTitleTable
-
+from yumekai_importer.ui.widgets.themed_item_delegate import ThemedItemDelegate
 
 
 def make_table(
@@ -23,6 +23,7 @@ def make_table(
 ) -> QTableWidget:
     table_type = FrozenTitleTable if freeze_title else QTableWidget
     table = table_type(0, len(headers))
+    table.setItemDelegate(ThemedItemDelegate(table))
     table.setHorizontalHeaderLabels(headers)
     table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)

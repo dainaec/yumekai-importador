@@ -8,14 +8,17 @@ from PySide6.QtGui import QBrush, QColor, QDesktopServices
 from PySide6.QtWidgets import (QComboBox, QDialog, QLabel, QMenu, QMessageBox, QProgressBar, QPushButton, QWidget)
 
 from yumekai_importer.catalog.sd_review import sd_review_changes
+from yumekai_importer.catalog.norma_review import norma_review_changes
 from yumekai_importer.catalog.store_review import store_changes
-from yumekai_importer.catalog.review_fields import sale_price_preview
 from yumekai_importer.catalog.suppliers import supplier_block_reason
 from yumekai_importer.catalog.change_selection import confirm_change_selection
 from yumekai_importer.diagnostics import logger
 from yumekai_importer.ui.windows.inventory_window import InventoryWindow, INVENTORY_COLUMNS
 from yumekai_importer.ui.widgets.change_review_dialog import review_changes
 from yumekai_importer.ui.workers.sd_recheck_worker import SdRecheckWorker
+from yumekai_importer.ui.workers.norma_recheck_worker import NormaRecheckWorker
+from yumekai_importer.ui.widgets.norma_access_dialog import NormaAccessDialog
+from yumekai_importer.storage.norma_credentials import load_norma_credentials, forget_norma_credentials
 from yumekai_importer.ui.workers.store_workers import StoreLoadWorker, StoreSaveWorker, StoreCatalogWorker
 from yumekai_importer.ui.widgets.store_product_dialog import StoreProductDialog
 from yumekai_importer.storage.store_creation import PendingStoreCreation
@@ -36,6 +39,9 @@ class StoreReviewWindow(InventoryWindow):
     def __init__(self, *, draft_backup=None):
         self._store_ready = False
         self._sd_worker = self._action_worker = None
+        self._norma_worker = None
+        self._norma_access = None
+        self._norma_remember_access = False
         self._drafts, self._sd_results = {}, {}
         self._draft_backup = draft_backup
         self._must_reload = False
@@ -63,7 +69,7 @@ class StoreReviewWindow(InventoryWindow):
         self._refresh_button.setToolTip('Volver a consultar WooCommerce para ver los cambios realizados en la web o desde otro equipo.')
         self._recover = QPushButton('Recuperar revisión sin guardar')
         self._recover.clicked.connect(self._restore_backup)
-        self._recover.setToolTip('Recupera una revisión SD que quedó sin aplicar. Solo aparece si hay una copia local.')
+        self._recover.setToolTip('Recupera una revisión de proveedor que quedó sin aplicar. Solo aparece si hay una copia local.')
         header.insertWidget(2, self._recover)
         self._supplier = QPushButton('Recomprobar')
         self._supplier.setObjectName('reviewMenuButton')
@@ -74,7 +80,17 @@ class StoreReviewWindow(InventoryWindow):
         self._stock_action = sd.addAction('Solo disponibilidad')
         self._full_action.triggered.connect(lambda _=False: self._recheck_sd())
         self._stock_action.triggered.connect(lambda _=False: self._recheck_sd(stock_only=True))
-        for name in ('Norma Editorial', 'Milky Way', 'Planeta'):
+        norma = suppliers.addMenu('Norma Editorial')
+        self._norma_full_action = norma.addAction('Recomprobar ficha completa')
+        self._norma_stock_action = norma.addAction('Solo stock')
+        self._norma_full_action.triggered.connect(lambda _=False: self._recheck_norma())
+        self._norma_stock_action.triggered.connect(lambda _=False: self._recheck_norma(stock_only=True))
+        norma.addSeparator()
+        self._norma_access_action = norma.addAction('Acceso ZonaLibros…')
+        self._norma_forget_action = norma.addAction('Olvidar acceso ZonaLibros')
+        self._norma_access_action.triggered.connect(lambda _=False: self._configure_norma_access())
+        self._norma_forget_action.triggered.connect(self._forget_norma_access)
+        for name in ('Milky Way', 'Planeta'):
             suppliers.addAction(name + ' · Próximamente').setEnabled(False)
         self._stop = QPushButton('Detener consulta')
         self._stop.setObjectName('clearButton')
@@ -121,7 +137,7 @@ class StoreReviewWindow(InventoryWindow):
         button_role(self._clear_filters, 'quiet')
         hint = self.findChild(QLabel, 'reviewHint')
         hint.setText('Datos actuales de WooCommerce. Actualizar tienda vuelve a consultar la web. '
-                     'Doble clic para editar una ficha o revisar sus propuestas SD. '
+                     'Doble clic para editar una ficha o revisar las propuestas del proveedor. '
                      'Despublicar la pasa a Borradores; puedes volver a publicarla desde aquí.')
         self._table.doubleClicked.connect(self._review_one)
         self._store_ready = True
@@ -129,7 +145,7 @@ class StoreReviewWindow(InventoryWindow):
 
     @property
     def _busy(self):
-        return self._worker is not None or self._sd_worker is not None or self._action_worker is not None
+        return any(worker is not None for worker in (self._worker, self._sd_worker, self._norma_worker, self._action_worker))
 
     def showEvent(self, event):
         QWidget.showEvent(self, event)
@@ -199,12 +215,23 @@ class StoreReviewWindow(InventoryWindow):
         for action in (self._full_action, self._stock_action):
             action.setEnabled(bool(selected) and not self._busy and not self._must_reload and not blocked)
             action.setToolTip(blocked or 'Consultar las fichas marcadas en SD Distribuciones.')
+        norma_blocked = supplier_block_reason(selected, 'norma')
+        if any(p.get('publication_status') != 'publish' for p in selected.values()):
+            norma_blocked = 'La revisión Norma en tienda requiere productos publicados. Puedes editar los borradores con Editar ficha.'
+        for action in (self._norma_full_action, self._norma_stock_action):
+            action.setEnabled(bool(selected) and not self._busy and not self._must_reload and not norma_blocked)
+            action.setToolTip(norma_blocked or 'Consultar las fichas marcadas en Norma ZonaLibros.')
+        self._norma_access_action.setEnabled(not self._busy)
+        self._norma_forget_action.setEnabled(not self._busy)
         self._supplier.menu().setToolTipsVisible(True)
-        self._supplier.setToolTip(blocked or 'Consultar las fichas marcadas por distribuidor.')
+        self._supplier.setToolTip('Volver a consultar y comparar las fichas marcadas por distribuidor.')
         if self._sd_worker:
             self._supplier.setText('Consultando SD…')
-        self._stop.setVisible(self._sd_worker is not None)
-        self._stop.setEnabled(self._sd_worker is not None and not self._sd_worker.stop_requested.is_set())
+        if self._norma_worker:
+            self._supplier.setText('Consultando Norma…')
+        supplier_worker = self._norma_worker or self._sd_worker
+        self._stop.setVisible(supplier_worker is not None)
+        self._stop.setEnabled(supplier_worker is not None and not supplier_worker.stop_requested.is_set())
         keys = self._proposal_keys()
         self._apply.setText(f'Revisar y aplicar en tienda ({len(keys)})')
         self._apply.setEnabled(bool(keys) and not self._busy and not self._must_reload)
@@ -371,43 +398,119 @@ class StoreReviewWindow(InventoryWindow):
         self._sd_worker.start()
 
     def _stop_sd(self):
-        if self._sd_worker:
-            self._sd_worker.stop_requested.set()
+        worker = self._norma_worker or self._sd_worker
+        if worker:
+            worker.stop_requested.set()
             self._stop.setEnabled(False)
             self._stop.setText('Deteniendo…')
 
     def _progress(self, completed, total):
-        self._supplier.setText(f'SD · {completed}/{total}')
+        name = 'Norma' if self._norma_worker is not None else 'SD'
+        self._supplier.setText(f'{name} · {completed}/{total}')
 
     def _finish_sd(self):
         worker, self._sd_worker = self._sd_worker, None
+        self._finish_supplier(worker, 'SD', sd_review_changes)
+
+    def _finish_norma(self):
+        worker, self._norma_worker = self._norma_worker, None
+        self._finish_supplier(worker, 'Norma', norma_review_changes)
+
+    def _finish_supplier(self, worker, supplier, compare):
+        if worker is None:
+            return
         changed = errors = 0
         changed_keys = []
         for key, result in worker.results.items():
             product = worker.products[key]
-            suggestions, note = sd_review_changes(product, result, stock_only=worker.stock_only)
+            suggestions, note = compare(product, result, stock_only=worker.stock_only)
             changes = store_changes(suggestions)
-            if 'retail_price' in changes and not product.get('sale_price'):
-                changes['sale_price'] = sale_price_preview(changes['retail_price'])
+            if 'yumekai_status' in changes and changes['yumekai_status'] is None:
+                changes.pop('yumekai_status')
+                note += ' · Disponibilidad sin confirmar: se conserva el estado publicado.'
             if changes:
                 self._drafts.setdefault(key, {'changes': {}, 'ready_to_upload': False})['changes'].update(changes)
                 changed += 1
                 changed_keys.append(key)
             errors += result.status in ('error', 'not_found')
             if any(field not in changes for field in suggestions):
-                note += ' · Portada y categorías se conservan; esta actualización aplica datos de ficha y disponibilidad.'
-            self._sd_results[key] = {'note': note, 'url': result.url, 'result': result.status}
+                note += ' · Los campos sin actualización admitida en tienda se conservan.'
+            self._sd_results[key] = {'note': note, 'url': result.url, 'result': result.status, 'supplier': supplier.casefold()}
         self._checkpoint()
         self._update_filter_options()
         self._fill_table()
         self._stop.setText('Detener consulta')
-        self._set_feedback(f'SD: {changed} ficha(s) con propuestas · {errors} con error o sin encontrar. '
+        self._set_feedback(f'{supplier}: {changed} ficha(s) con propuestas · {errors} con error o sin encontrar. '
                            + ('Revisa los campos que quieres aplicar.' if changed else 'No hay cambios nuevos que revisar.')
                            + (' ' + str(worker.error) if worker.error else ''), error=bool(worker.error))
         worker.deleteLater()
         self._update_actions()
         if changed_keys:
-            self._save_proposals(keys=changed_keys)
+            if worker.stock_only:
+                self._save_proposals(keys=changed_keys, fields={'yumekai_status'})
+            else:
+                self._save_proposals(keys=changed_keys)
+
+    def _recheck_norma(self, *, stock_only=False):
+        if self._busy or not self._selected or self._must_reload:
+            return
+        products = {self._key(p): p for p in self._current_products() if self._key(p) in self._selected}
+        blocked = supplier_block_reason(products, 'norma')
+        if any(p.get('publication_status') != 'publish' for p in products.values()):
+            blocked = 'La revisión Norma requiere productos publicados.'
+        if blocked:
+            self._set_feedback(blocked, error=True)
+            return
+        if self._norma_access is None:
+            try:
+                self._norma_access = load_norma_credentials()
+                self._norma_remember_access = self._norma_access is not None
+            except Exception:
+                self._norma_access = None
+        if self._norma_access is None and not self._configure_norma_access():
+            return
+        self._norma_worker = NormaRecheckWorker(products, self, credentials=self._norma_access,
+            remember_access=self._norma_remember_access, stock_only=stock_only)
+        self._norma_worker.progress.connect(self._progress)
+        self._norma_worker.finished.connect(self._finish_norma)
+        self._set_feedback(('Consultando solo stock en Norma ZonaLibros, sin MangaUpdates. ' if stock_only else
+                            'Recomprobando los datos actuales de Norma, incluidos los campos ya rellenados. ') +
+                           'Las diferencias se revisarán antes de aplicarlas en tienda.')
+        self._update_actions()
+        self._norma_worker.start()
+
+    def _configure_norma_access(self):
+        if self._busy:
+            return False
+        if self._norma_access is None:
+            try:
+                self._norma_access = load_norma_credentials()
+                self._norma_remember_access = self._norma_access is not None
+            except Exception:
+                pass
+        dialog = NormaAccessDialog(self._norma_access, self, remember=self._norma_remember_access)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        if accepted:
+            if self._norma_remember_access and not dialog.remember:
+                try:
+                    forget_norma_credentials()
+                except Exception:
+                    self._set_feedback('No se pudo olvidar el acceso anterior de Norma en este equipo.', error=True)
+                    dialog.deleteLater()
+                    return False
+            self._norma_access, self._norma_remember_access = dialog.credentials, dialog.remember
+        dialog.deleteLater()
+        return accepted
+
+    def _forget_norma_access(self):
+        if self._busy:
+            return
+        self._norma_access, self._norma_remember_access = None, False
+        try:
+            forget_norma_credentials()
+            self._set_feedback('Acceso de Norma olvidado en este equipo.')
+        except Exception:
+            self._set_feedback('No se pudo borrar el acceso guardado de Norma en este equipo.', error=True)
 
     def _review_one(self, index):
         if not index.isValid() or self._busy:
@@ -614,13 +717,19 @@ class StoreReviewWindow(InventoryWindow):
                     worker.created['product'].get('publication_status') if worker.created['product'].get('publication_status') in ('publish', 'draft') else 'all'))
             self._load_inventory()
 
-    def _save_proposals(self, *, keys=None):
+    def _save_proposals(self, *, keys=None, fields=None):
         if self._busy or self._must_reload:
             return
         keys = self._proposal_keys() if keys is None else keys
         stored = {self._key(p): p for p in self._products}
         rows = {key: {'product': stored[key], 'changes': dict(self._drafts[key]['changes'])}
                 for key in keys if key in self._drafts}
+        if fields is not None:
+            for row in rows.values():
+                row['changes'] = {field: value for field, value in row['changes'].items() if field in fields}
+            rows = {key: row for key, row in rows.items() if row['changes']}
+        if not rows:
+            return
         selected = review_changes(rows, store=True, parent=self)
         if selected is None:
             return

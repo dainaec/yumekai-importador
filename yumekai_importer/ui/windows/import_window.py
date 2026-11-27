@@ -1,6 +1,5 @@
 from yumekai_importer.ui.widgets.presentation import button_role
 from yumekai_importer.diagnostics import logger
-from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 
@@ -23,8 +22,7 @@ from yumekai_importer.ui.widgets.exception_approval_dialog import confirm_except
 
 from yumekai_importer.importers.import_result import ImportResult
 from yumekai_importer.importers.issues_excel import export_import_issues
-from yumekai_importer.importers.norma.excel import read_norma_excel
-from yumekai_importer.importers.sd.excel import read_sd_excel
+from yumekai_importer.importers.catalog_excel import read_catalog_excel_with_supplier
 
 from yumekai_importer.storage.catalog_api import CatalogApi
 from yumekai_importer.storage.credentials import load_credentials
@@ -65,11 +63,36 @@ STOCK_LABELS = {
     YumekaiStatus.ON_BACKORDER: "Se puede reservar",
 }
 
+def _build_import_warnings(result, candidates, *, include_import_issues=False):
+    """Keep SD approvals unchanged; include every guardable Norma row issue."""
+    issues_by_product = {}
+    if include_import_issues:
+        for issue in result.issues:
+            product = result.products_by_row.get(issue.row)
+            if product is not None:
+                message = f"Fila {issue.row} · {issue.field}: {issue.message}"
+                issues_by_product.setdefault(id(product), []).append(message)
+
+    warnings = {}
+    for key, product in candidates.items():
+        # Keep the existing approval payload untouched for SD.
+        issues = import_exception_issues(vars(product))
+        if include_import_issues:
+            issues = list(dict.fromkeys([
+                *(issues or ()),
+                *issues_by_product.get(id(product), ()),
+            ]))
+        if issues:
+            warnings[key] = {"product": vars(product), "issues": issues}
+    return warnings
+
+
 class ImportWindow(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._result = ImportResult()
         self._source_filename = "catalogo.xlsx"
+        self._import_supplier: str | None = None
         self._issues_exported = True
         self._save_worker: SaveImportWorker | None = None
         self.setWindowTitle("Yumekai")
@@ -96,20 +119,17 @@ class ImportWindow(QWidget):
 
         actions = QHBoxLayout()
         actions.setSpacing(8)
-        sd_button = button_role(QPushButton("Cargar SD"), "soft")
-        norma_button = button_role(QPushButton("Cargar Norma"), "soft")
+        import_button = button_role(QPushButton("Importar Excel"), "soft")
         clear_button = QPushButton("Limpiar")
         clear_button.setObjectName("clearButton")
 
-        sd_button.clicked.connect(lambda: self._load_excel(read_sd_excel))
-        norma_button.clicked.connect(lambda: self._load_excel(read_norma_excel))
+        import_button.clicked.connect(self._load_excel)
         clear_button.clicked.connect(self._clear)
 
-        actions.addWidget(sd_button)
-        actions.addWidget(norma_button)
+        actions.addWidget(import_button)
         actions.addStretch()
 
-        self._file_buttons = (sd_button, norma_button, clear_button)
+        self._file_buttons = (import_button, clear_button)
         self.save_button = button_role(QPushButton("Guardar carga"), "primary")
         self.save_button.setEnabled(False)
         self.save_button.clicked.connect(self._save_to_hostalia)
@@ -118,7 +138,7 @@ class ImportWindow(QWidget):
         actions.addWidget(clear_button)
         layout.addLayout(actions)
 
-        self.summary = QLabel("Carga el Excel y guarda las fichas. La consulta SD se realiza desde Revisar.")
+        self.summary = QLabel("Carga el Excel de tu distribuidor y revisa las fichas antes de guardar. La consulta SD se realiza desde Revisar.")
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setObjectName("importSummary")
         layout.addWidget(self.summary)
@@ -157,7 +177,7 @@ class ImportWindow(QWidget):
         splitter.setSizes([450, 200])
         layout.addWidget(splitter, 1)
 
-    def _load_excel(self, reader: Callable[[str], ImportResult]) -> None:
+    def _load_excel(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Selecciona el Excel", str(Path("data").resolve()), "Excel (*.xlsx)"
         )
@@ -165,19 +185,20 @@ class ImportWindow(QWidget):
             return
 
         try:
-            result = reader(path)
+            supplier, result = read_catalog_excel_with_supplier(path)
         except Exception as error:
             logger.exception("import.failed")
             QMessageBox.warning(self, "No se pudo leer el Excel", str(error))
             return
 
         if self._confirm_leave_issues():
-            self._show_result(result, Path(path).name)
+            self._show_result(result, Path(path).name, supplier)
 
-    def _show_result(self, result: ImportResult, filename: str) -> None:
+    def _show_result(self, result: ImportResult, filename: str, supplier: str | None = None) -> None:
         logger.info("import.loaded source=%s products=%s issues=%s", filename, len(result.products), len(result.issues))
         self._result = result
         self._source_filename = filename
+        self._import_supplier = supplier
         self._issues_exported = not bool(result.issues)
         self.export_issues_button.setEnabled(bool(result.issues))
         self._show_products()
@@ -281,21 +302,24 @@ class ImportWindow(QWidget):
         if not self._confirm_leave_issues():
             return
         self._result = ImportResult()
+        self._import_supplier = None
         self._issues_exported = True
         self.export_issues_button.setEnabled(False)
         self.save_button.setEnabled(False)
         self.products_table.setRowCount(0)
         self.issues_table.setRowCount(0)
-        self.summary.setText("Carga el Excel y guarda las fichas. La consulta SD se realiza desde Revisar.")
+        self.summary.setText("Carga el Excel de tu distribuidor y revisa las fichas antes de guardar. La consulta SD se realiza desde Revisar.")
 
     def _save_to_hostalia(self) -> None:
         if not self._result.products or self._save_worker is not None:
             return
 
         candidates = {str(index): product for index, product in enumerate(self._result.products)}
-        warnings = {key: {"product": vars(product), "issues": issues}
-                    for key, product in candidates.items()
-                    if (issues := import_exception_issues(vars(product)))}
+        warnings = _build_import_warnings(
+            self._result,
+            candidates,
+            include_import_issues=self._import_supplier == "norma",
+        )
         approved = confirm_exceptions(warnings, parent=self, purpose="Guardar carga en el importador",
                                       normal_count=len(candidates) - len(warnings))
         if approved is None:

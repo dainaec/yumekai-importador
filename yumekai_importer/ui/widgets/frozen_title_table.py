@@ -2,6 +2,8 @@ from PySide6.QtCore import QModelIndex, QRect, Qt
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableView, QTableWidget, QStyledItemDelegate
 
+from yumekai_importer.ui.widgets.themed_item_delegate import ThemedItemDelegate
+
 
 class FrozenTitleTable(QTableWidget):
     def __init__(self, rows: int, columns: int) -> None:
@@ -9,6 +11,7 @@ class FrozenTitleTable(QTableWidget):
         self._frozen_columns = 1
 
         frozen = QTableView(self)
+        frozen.setItemDelegate(ThemedItemDelegate(frozen))
         self._frozen_view = frozen
         frozen.setObjectName("frozenTitleView")
         frozen.setModel(self.model())

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QScrollArea, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from yumekai_importer.ui.styles.theme_switcher import set_theme_stylesheet
 from yumekai_importer.catalog.review_fields import normalize_pages, normalize_price, normalize_volume
 
 
@@ -162,7 +163,7 @@ class StoreProductDialog(QDialog):
         self.error = QLabel()
         self.error.setTextFormat(Qt.TextFormat.PlainText)
         self.error.setWordWrap(True)
-        self.error.setStyleSheet('color: #991B1B;')
+        set_theme_stylesheet(self.error, 'color: #991B1B;')
         layout.addWidget(self.error)
         buttons = QDialogButtonBox()
         if recovered_changes:

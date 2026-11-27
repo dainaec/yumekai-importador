@@ -2,7 +2,36 @@
 
 Las novedades en desarrollo se registran en Sin publicar hasta preparar su distribución. La versión del programa se define en yumekai_importer/version.py.
 
-## [Sin publicar] · 26/11/2026
+## 0.3.3 · 27/11/2026
+
+### Añadido
+
+- Tema oscuro con selección de apariencia guardada entre sesiones y aplicación a las pantallas y diálogos del programa.
+- Edición por lote de una colección desde Revisar pendientes: tipo de obra, demografía, formato, número de páginas y sinopsis.
+- Selección de los campos que se aplicarán a la colección, filtro opcional por editorial y comparación de los valores actuales y propuestos antes de guardar.
+- Marca manual de ficha completa para retirar fichas del filtro Con datos pendientes, aunque tengan avisos, códigos fuera del estándar ISBN-13 o campos sin completar. La operación solicita confirmación sin validar el contenido de la ficha.
+- Posibilidad de quitar la marca manual aunque falten datos y filtro Completadas manualmente para localizar esas fichas.
+- Almacenamiento de las marcas manuales en la base de datos del importador, compartido entre equipos al actualizar la lista. La marca se conserva si se corrige el código de la ficha y se elimina al borrar la ficha.
+
+### Mejorado
+
+- Optimización de las consultas a Norma ZonaLibros durante la recomprobación de fichas.
+- Obtención del tipo de obra y la demografía de las fichas de Norma mediante la API de MangaUpdates.
+- Optimización de los modos de recomprobación de solo disponibilidad de SD y Norma, limitados a la consulta y propuesta de cambios de stock.
+- La edición por colección conserva los campos desmarcados y otros cambios pendientes que no formen parte de los cambios aceptados del lote.
+
+### Corregido
+
+- Incidencias en las recomprobaciones de disponibilidad de SD y Norma.
+
+### Despliegue y compatibilidad
+
+- Ejecutar una vez `manual_completion.sql` en la base de datos del importador para crear la tabla de marcas manuales.
+- Subir `manual_completion.php` a la carpeta protegida `importer-api`, junto a los endpoints existentes.
+- Actualizar la aplicación en los equipos que utilicen las marcas compartidas. Las marcas se cargan al abrir la pantalla o pulsar Actualizar lista.
+- Actualizar la versión del programa a `0.3.3` y recompilar el ejecutable de Windows para distribuir esta entrega.
+
+## 0.3.2 · 26/11/2026
 
 ### Añadido
 

@@ -62,17 +62,49 @@ def _fetch_page(url: str, stop_requested: Event) -> tuple[html.HtmlElement, str]
             raise SdLookupCancelled()
     raise RuntimeError('SD no ha respondido.')
 
+def _read_public_detail(
+    page, source_url, isbn, stop, *, checked_on=None, stock_only=False,
+):
+    if stock_only:
+        article = _main_article(page)
+        if not any(
+            sd_codes_match(isbn, _text(article, field))
+            for field in ("txtISBN", "txtEan")
+        ):
+            raise ValueError("El ISBN de la ficha de SD no coincide.")
 
-def _detail_isbn(page):
-    article = _main_article(page)
-    return normalize_sd_code(_text(article, 'txtISBN')) or normalize_sd_code(_text(article, 'txtEan'))
+        stock = read_stock_info(page, checked_on=checked_on)
+        public_url = _public_detail_url(page, source_url)
 
+        # Solo abrir otra página si todavía falta confirmar el estado
+        # o la fecha necesaria para «Consultar disponibilidad».
+        if public_url is not None and stock.yumekai_status is None:
+            try:
+                public_page, final = _fetch_page(public_url, stop)
+                public_article = _main_article(public_page)
 
-def _detail_stock(page):
-    return read_stock_info(page).available
+                if not any(
+                    sd_codes_match(isbn, _text(public_article, field))
+                    for field in ("txtISBN", "txtEan")
+                ):
+                    raise ValueError(
+                        "El ISBN de la ficha pública de SD no coincide."
+                    )
 
+                return public_page, final, None, ""
 
-def _read_public_detail(page, source_url, isbn, stop, *, checked_on=None):
+            except SdLookupCancelled:
+                raise
+
+            except Exception as error:
+                return (
+                    page,
+                    source_url,
+                    None,
+                    f"Disponibilidad sin completar: {error}",
+                )
+
+        return page, source_url, None, ""
     details = _parse_details(page, isbn, checked_on=checked_on)
     public_url = _public_detail_url(page, source_url)
     if public_url is None:
@@ -95,6 +127,8 @@ def _lookup_sd_query(
     isbn: str,
     query: str,
     stop_requested: Event | None = None,
+    *,
+    stock_only: bool = False,
 ) -> SdLookupResult:
     stop = stop_requested if stop_requested is not None else Event()
     checked_on = consultation_day()
@@ -121,7 +155,11 @@ def _lookup_sd_query(
             )
         
         fallback = read_stock_info(page, checked_on=checked_on)
-        page, final, details, message = _read_public_detail(page, final, normalized, stop, checked_on=checked_on)
+        page, final, details, message = _read_public_detail(
+                page, final, normalized, stop,
+                checked_on=checked_on,
+                stock_only=stock_only,
+            )
         stock = prefer_stock_info(read_stock_info(page, checked_on=checked_on), fallback)
         return SdLookupResult(normalized, 'found', stock.available, details, final, message, stock)
 
@@ -150,7 +188,10 @@ def _lookup_sd_query(
             detail_page, detail_url = _fetch_page(next(iter(candidates)), stop)
             initial_stock = prefer_stock_info(read_stock_info(detail_page, checked_on=checked_on), fallback)
             detail_page, detail_url, details, message = _read_public_detail(
-                detail_page, detail_url, normalized, stop, checked_on=checked_on)
+                    detail_page, detail_url, normalized, stop,
+                    checked_on=checked_on,
+                    stock_only=stock_only,
+                )
             stock = prefer_stock_info(read_stock_info(detail_page, checked_on=checked_on), initial_stock)
             return SdLookupResult(normalized, 'found', stock.available, details, detail_url, message, stock)
         except SdLookupCancelled:
@@ -178,6 +219,7 @@ def lookup_sd_isbn(
     stop_requested: Event | None = None,
     *,
     title: str = "",
+    stock_only: bool = False,
 ) -> SdLookupResult:
     stop = stop_requested if stop_requested is not None else Event()
     variants = sd_code_variants(isbn)
@@ -193,7 +235,7 @@ def lookup_sd_isbn(
             raise SdLookupCancelled()
 
         tried.add(query.casefold())
-        last = _lookup_sd_query(isbn, query, stop)
+        last = _lookup_sd_query(isbn, query, stop, stock_only=stock_only)
 
         if last.status == "found":
             return last
@@ -205,7 +247,7 @@ def lookup_sd_isbn(
             if stop.is_set():
                 raise SdLookupCancelled()
 
-            last = _lookup_sd_query(isbn, query, stop)
+            last = _lookup_sd_query(isbn, query, stop, stock_only=stock_only)
 
             if last.status == "found":
                 return last

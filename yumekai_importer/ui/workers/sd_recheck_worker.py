@@ -45,6 +45,7 @@ class SdRecheckWorker(QThread):
                             str(product.get("isbn") or ""),
                             self.stop_requested,
                             title=str(product.get("title") or ""),
+                            stock_only=self.stock_only,
                         )] = key
                     if not pending:
                         break

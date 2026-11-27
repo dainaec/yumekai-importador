@@ -2,6 +2,7 @@ from yumekai_importer.ui.widgets.presentation import review_dialog_layout, style
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QVBoxLayout
 
+from yumekai_importer.ui.styles.theme_switcher import set_theme_stylesheet
 from yumekai_importer.ui.widgets.isbn_field import IsbnField
 
 
@@ -40,7 +41,7 @@ class _ImportIsbnDialog(QDialog):
         layout.addWidget(self._error)
         style_button_box(buttons)
         layout.addWidget(buttons)
-        self.setStyleSheet("""
+        set_theme_stylesheet(self, """
             QDialog { background-color: #FFFFFF; }
             QLabel, QCheckBox { color: #201A22; }
             QLineEdit { background-color: #FFFFFF; color: #201A22;

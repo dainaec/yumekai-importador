@@ -44,7 +44,7 @@ class ReviewFiltersPanel(QWidget):
             ("description", "Sinopsis", [(None, "Todas"), (1, "Con sinopsis"), (0, "Sin sinopsis")]),
             ("image_url", "Portada", [(None, "Todas"), (1, "Con portada"), (0, "Sin portada")]),
             ("quality", "Validación", [(None, "Todas las fichas"), ("blocking", "Con avisos de datos"),
-                                        ("complete", "Sin datos pendientes")]),
+                                        ("complete", "Sin datos pendientes"), ("manual_complete", "Completadas manualmente")]),
         )
         for column, (field, label, values) in enumerate(choices):
             combo = self._combo(field, label)

@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from yumekai_importer.ui.styles.theme_switcher import set_theme_stylesheet
+from yumekai_importer.ui.styles.theme_colors import theme_color
 from yumekai_importer.catalog.review_fields import (
     BOOK_FORMATS,
     PAGES_INPUT,
@@ -46,6 +48,7 @@ from yumekai_importer.catalog.review_fields import (
 from yumekai_importer.ui.widgets.isbn_field import IsbnField, ReviewCheckBox
 from yumekai_importer.catalog.classification import DEMOGRAPHICS, canonical_demographic
 from yumekai_importer.catalog.exception_rules import required_issues
+from yumekai_importer.catalog.book_formats import normalize_yumekai_format
 
 
 _WORK_FIELDS = (
@@ -74,7 +77,7 @@ _COMPUTED_FIELDS = {"isbn", "sale_price", "sku", "categories"}
 
 def _draw_chevron(painter: QPainter, center: QPointF, direction: int, enabled: bool) -> None:
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    pen = QPen(QColor("#6F556A" if enabled else "#A59BA6"), 1.5)
+    pen = QPen(theme_color("#6F556A" if enabled else "#A59BA6"), 1.5)
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
     pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
@@ -177,6 +180,8 @@ class ProductReviewDialog(QDialog):
             value = product.get(field)
             if field == "demographic":
                 value = canonical_demographic(value)
+            if field == "book_format":
+                value = normalize_yumekai_format(value)
             if field == "isbn":
                 editor = self._isbn
             elif field in {"author", "publisher"}:
@@ -241,6 +246,11 @@ class ProductReviewDialog(QDialog):
             for field, editor in self._editors.items()
             if field not in _COMPUTED_FIELDS
         }
+        original_format = product.get("book_format")
+        if original_format and normalize_yumekai_format(original_format) != original_format:
+            # Opening the dialog only changes the displayed choice. The alias
+            # becomes an explicit change when the user presses Guardar ficha.
+            self._initial["book_format"] = original_format
         self._editors["work_type"].currentIndexChanged.connect(self._sync_categories)
         self._editors["demographic"].currentIndexChanged.connect(self._sync_categories)
         self._sync_categories()
@@ -313,7 +323,7 @@ class ProductReviewDialog(QDialog):
         style_button_box(buttons)
         footer.addWidget(buttons)
         layout.addLayout(footer)
-        self.setStyleSheet(_REVIEW_STYLE)
+        set_theme_stylesheet(self, _REVIEW_STYLE)
 
         tab_order = [
             self._editors[field]
@@ -466,6 +476,8 @@ class ProductReviewDialog(QDialog):
             return value
 
         text = str(value).strip()
+        if field == "book_format":
+            return normalize_yumekai_format(text)
         if field in _NUMERIC_FIELDS:
             _, normalize = _NUMERIC_FIELDS[field]
             return normalize(text)
